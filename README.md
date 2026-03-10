@@ -10,8 +10,8 @@ Scrapers open source para bancos chilenos. Obtén tus movimientos bancarios y sa
 |-------|----|--------|
 | Banco Falabella | `falabella` | ✅ Funcional |
 | Banco BICE | `bice` | ✅ Funcional |
+| Banco Santander | `santander` | ⚠️ Experimental |
 | Banco de Chile | `bchile` | 🔜 Próximamente |
-| Banco Santander | `santander` | 🔜 Próximamente |
 | BCI | `bci` | 🔜 Próximamente |
 | Banco Estado | `estado` | 🔜 Próximamente |
 
@@ -60,8 +60,13 @@ export BICE_PASS=tu_clave
 ## Opcional:  
 export BICE_MONTHS=1 
 
+# Banco Santander
+export SANTANDER_RUT=12345678-9
+export SANTANDER_PASS=tu_clave
+
 # Consultar banco
 npx open-banking-chile --bank falabella --pretty
+npx open-banking-chile --bank santander --pretty
 
 # Solo movimientos
 npx open-banking-chile --bank falabella --movements | jq .
