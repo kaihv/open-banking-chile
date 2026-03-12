@@ -11,6 +11,7 @@ Scrapers open source para bancos chilenos. Obtén tus movimientos bancarios y sa
 | Banco Falabella | `falabella` | ✅ Funcional |
 | Banco BICE | `bice` | ✅ Funcional |
 | Banco Santander | `santander` | ✅ Funcional |
+| Banco Edwards | `edwards` | ✅ Funcional |
 | Banco de Chile | `bchile` | 🔜 Próximamente |
 | BCI | `bci` | 🔜 Próximamente |
 | Banco Estado | `estado` | 🔜 Próximamente |
@@ -37,7 +38,7 @@ brew install --cask google-chrome
 npm install open-banking-chile
 
 # O clonar el repo
-git clone https://github.com/kaihv/open-banking-chile.git
+git clone https://github.com/CubelliJ/open-banking-chile.git
 cd open-banking-chile
 npm install
 npm run build
@@ -64,9 +65,14 @@ export BICE_MONTHS=1
 export SANTANDER_RUT=12345678-9
 export SANTANDER_PASS=tu_clave
 
+# Banco Edwards
+export EDWARDS_RUT=12345678-9
+export EDWARDS_PASS=tu_clave
+
 # Consultar banco
 npx open-banking-chile --bank falabella --pretty
 npx open-banking-chile --bank santander --pretty
+npx open-banking-chile --bank edwards --pretty
 
 # Solo movimientos
 npx open-banking-chile --bank falabella --movements | jq .

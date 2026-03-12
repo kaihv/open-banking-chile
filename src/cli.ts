@@ -1,5 +1,12 @@
 #!/usr/bin/env node
 
+import * as dotenv from "dotenv";
+import * as path from "path";
+
+// Load .env — try project root first, then parent directory
+dotenv.config({ path: path.resolve(__dirname, "../.env") });
+dotenv.config({ path: path.resolve(__dirname, "../../.env") });
+
 import { banks, listBanks, getBank } from "./index";
 
 async function main() {

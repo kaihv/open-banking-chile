@@ -33,12 +33,13 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/kaihv/open-banking-chile"
+    "url": "https://github.com/CubelliJ/open-banking-chile.git"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
+    "dotenv": "^17.3.1",
     "puppeteer-core": "^24.0.0"
   },
   "devDependencies": {
