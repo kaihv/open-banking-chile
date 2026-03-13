@@ -38,7 +38,7 @@ brew install --cask google-chrome
 npm install open-banking-chile
 
 # O clonar el repo
-git clone https://github.com/CubelliJ/open-banking-chile.git
+git clone https://github.com/kaihv/open-banking-chile.git
 cd open-banking-chile
 npm install
 npm run build

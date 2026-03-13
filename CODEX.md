@@ -10,7 +10,7 @@ Open source multi-bank scraping framework for Chilean banks. Extracts movements 
 
 ### Setup
 ```bash
-git clone https://github.com/CubelliJ/open-banking-chile.git
+git clone https://github.com/kaihv/open-banking-chile.git
 cd open-banking-chile
 npm install && npm run build
 cp .env.example .env  # edit with credentials
