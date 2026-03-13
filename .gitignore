@@ -3,4 +3,5 @@ dist/
 .env
 *.log
 screenshots/
+debug/
 .DS_Store

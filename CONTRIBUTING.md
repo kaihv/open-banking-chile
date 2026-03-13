@@ -139,7 +139,7 @@ En `src/utils.ts` hay funciones compartidas que puedes usar:
 
 ## Bancos que faltan (wishlist)
 
-- Banco de Chile (BancoChile / Edwards)
+- Banco de Chile (BancoChile)
 - Banco Santander
 - BCI
 - Banco Estado

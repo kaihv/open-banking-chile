@@ -33,7 +33,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/kaihv/open-banking-chile"
+    "url": "https://github.com/kaihv/open-banking-chile.git"
   },
   "engines": {
     "node": ">=18"

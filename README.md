@@ -11,6 +11,7 @@ Scrapers open source para bancos chilenos. Obtén tus movimientos bancarios y sa
 | Banco Falabella | `falabella` | ✅ Funcional |
 | Banco BICE | `bice` | ✅ Funcional |
 | Banco Santander | `santander` | ✅ Funcional |
+| Banco Edwards | `edwards` | ✅ Funcional |
 | Banco de Chile | `bchile` | 🟡 Solo saldo |
 | BCI | `bci` | 🔜 Próximamente |
 | Banco Estado | `estado` | 🔜 Próximamente |
@@ -64,15 +65,25 @@ export BICE_MONTHS=1
 export SANTANDER_RUT=12345678-9
 export SANTANDER_PASS=tu_clave
 
+<<<<<<< HEAD
 # Banco de Chile
 export BANCOCHILE_RUT=12345678-9
 export BANCOCHILE_PASS=tu_clave
+=======
+# Banco Edwards
+export EDWARDS_RUT=12345678-9
+export EDWARDS_PASS=tu_clave
+>>>>>>> pr-7-edwards
 
 # Consultar banco
 npx open-banking-chile --bank falabella --pretty
 npx open-banking-chile --bank santander --pretty
+<<<<<<< HEAD
 npx open-banking-chile --bank bchile --pretty
 
+=======
+npx open-banking-chile --bank edwards --pretty
+>>>>>>> pr-7-edwards
 
 # Solo movimientos
 npx open-banking-chile --bank falabella --movements | jq .
