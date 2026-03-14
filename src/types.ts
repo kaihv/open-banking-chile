@@ -10,6 +10,29 @@ export interface BankMovement {
   balance: number;
 }
 
+/** Saldo de una tarjeta de crédito */
+export interface CreditCardBalance {
+  /** Etiqueta de la tarjeta (ej: "Mastercard Black ****5824") */
+  label: string;
+  /** Cupo nacional */
+  national?: {
+    used: number;
+    available: number;
+    total: number;
+  };
+  /** Cupo internacional */
+  international?: {
+    used: number;
+    available: number;
+    total: number;
+    currency: string;
+  };
+  /** Periodo de facturación actual (ej: "Febrero 2026") */
+  billingPeriod?: string;
+  /** Próxima fecha de facturación (ej: "19 de marzo") */
+  nextBillingDate?: string;
+}
+
 /** Resultado del scraping */
 export interface ScrapeResult {
   /** Si el scraping fue exitoso */
@@ -20,6 +43,8 @@ export interface ScrapeResult {
   movements: BankMovement[];
   /** Saldo actual de la cuenta */
   balance?: number;
+  /** Saldos de tarjetas de crédito */
+  creditCards?: CreditCardBalance[];
   /** Mensaje de error si success = false */
   error?: string;
   /** Screenshot en base64 (para debugging) */
