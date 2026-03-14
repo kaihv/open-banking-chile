@@ -356,13 +356,19 @@ async function login(
     const timeoutSec = Math.max(30, parseInt(process.env.BCHILE_2FA_TIMEOUT_SEC || "180", 10));
     const timeoutMs = timeoutSec * 1000;
     debugLog.push(`  2FA detectado. Esperando aprobación manual (${timeoutSec}s máx)...`);
-    const start = Date.now();
+    const deadline = Date.now() + timeoutMs;
+    let pollCount = 0;
 
-    while (Date.now() - start < timeoutMs) {
+    while (Date.now() < deadline) {
       if (!(await has2FAChallenge(page))) {
         debugLog.push("  2FA completado, continuando flujo.");
         break;
       }
+      if (pollCount % 10 === 0) {
+        const remaining = Math.round((deadline - Date.now()) / 1000);
+        debugLog.push(`  Esperando aprobación... (${remaining}s restantes)`);
+      }
+      pollCount++;
       await delay(1500);
     }
 

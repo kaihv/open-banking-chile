@@ -5,3 +5,4 @@ dist/
 screenshots/
 debug/
 .DS_Store
+.claude/

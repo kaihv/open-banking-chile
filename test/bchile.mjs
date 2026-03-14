@@ -4,14 +4,15 @@ import { readFileSync } from "fs";
 
 const env = Object.fromEntries(
   readFileSync(".env", "utf8").split("\n")
-    .filter(l => l && !l.startsWith("#"))
-    .map(l => l.split("=").map(s => s.trim()))
+    .filter(l => l && !l.startsWith("#") && l.includes("="))
+    .map(l => { const i = l.indexOf("="); return [l.slice(0, i).trim(), l.slice(i + 1).trim()]; })
 );
 
 const result = await bchile.scrape({
   rut: env.BCHILE_RUT,
   password: env.BCHILE_PASS,
-  headful: true,
+  headful: process.argv.includes("--headful"),
+  saveScreenshots: process.argv.includes("--screenshots"),
 });
 
 if (result.success) {
