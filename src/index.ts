@@ -3,6 +3,7 @@ import bice from "./banks/bice";
 import edwards from "./banks/edwards";
 import falabella from "./banks/falabella";
 import santander from "./banks/santander";
+import scotiabank from "./banks/scotiabank";
 import type { BankScraper } from "./types";
 
 /** Registro de todos los bancos disponibles */
@@ -12,6 +13,7 @@ export const banks: Record<string, BankScraper> = {
   edwards,
   falabella,
   santander,
+  scotiabank,
 };
 
 /** Lista de bancos soportados */
@@ -43,3 +45,4 @@ export { default as bice } from "./banks/bice";
 export { default as edwards } from "./banks/edwards";
 export { default as falabella } from "./banks/falabella";
 export { default as santander } from "./banks/santander";
+export { default as scotiabank } from "./banks/scotiabank";
