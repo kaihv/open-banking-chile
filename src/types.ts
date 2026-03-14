@@ -26,6 +26,22 @@ export interface ScrapeResult {
   screenshot?: string;
   /** Log de debug con pasos del scraper */
   debug?: string;
+  /** Saldos de tarjetas de crédito */
+  creditCards?: CreditCardBalance[];
+}
+
+/** Saldo de una tarjeta de crédito */
+export interface CreditCardBalance {
+  /** Etiqueta de la tarjeta (ej: "Visa Signature ****1234") */
+  label: string;
+  /** Cupo nacional */
+  national: { used: number; available: number; total: number };
+  /** Cupo internacional */
+  international?: { used: number; available: number; total: number; currency: string };
+  /** Fecha próxima facturación */
+  nextBillingDate?: string;
+  /** Período de facturación */
+  billingPeriod?: string;
 }
 
 /** Credenciales de autenticación */
