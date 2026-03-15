@@ -13,7 +13,7 @@ Scrapers open source para bancos chilenos. Obtén tus movimientos bancarios y sa
 | Banco Santander | `santander` | ✅ Funcional |
 | Banco Edwards | `edwards` | ✅ Funcional |
 | Banco Scotiabank | `scotiabank` | ✅ Funcional |
-| Banco de Chile | `bchile` | 🟡 Solo saldo |
+| Banco de Chile | `bchile` | ✅ Funcional |
 | BCI | `bci` | ✅ Funcional |
 | Banco Estado | `estado` | 🔜 Próximamente |
 
