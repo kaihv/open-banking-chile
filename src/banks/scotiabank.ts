@@ -702,10 +702,10 @@ async function extractRaw(ctx: { evaluate: Page["evaluate"] }): Promise<RawMovem
         const description = lines.find((l) => l !== date && l !== amount && l.length > 3) || "";
         const balance = lines.find((l) => l.toLowerCase().includes("saldo") && /[$]\s*[\d.]+/.test(l)) || "";
 
-        const normalizedAmount =
-          text.toLowerCase().includes("cargo") || text.toLowerCase().includes("débito") || text.toLowerCase().includes("debito") || amount.includes("-")
-            ? `-${amount}`
-            : amount;
+        const isCargo = text.toLowerCase().includes("cargo") || text.toLowerCase().includes("débito") || text.toLowerCase().includes("debito") || amount.includes("-");
+        const normalizedAmount = isCargo
+          ? (amount.startsWith("-") ? amount : `-${amount}`)
+          : amount;
 
         results.push({ date, description, amount: normalizedAmount, balance });
       }
@@ -1114,7 +1114,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
       success: true,
       bank,
       movements: deduplicated,
-      balance: balance || undefined,
+      balance: balance ?? undefined,
       screenshot: screenshot as string,
       debug: debugLog.join("\n"),
     };
