@@ -12,7 +12,7 @@ const IFRAME_PATTERNS = {
 } as const;
 
 const TWO_FA_KEYWORDS = ["bci pass", "segundo factor", "aprobación en tu app", "autorizar en tu app", "confirmar en tu app"];
-const TWO_FA_TIMEOUT_SEC = Math.max(30, parseInt(process.env.BCI_2FA_TIMEOUT_SEC || "180", 10) || 180);
+const TWO_FA_TIMEOUT_SEC = Math.min(600, Math.max(30, parseInt(process.env.BCI_2FA_TIMEOUT_SEC || "180", 10) || 180));
 
 const TC_COMBINATIONS = [
   { tab: "Nacional $", billingType: "No facturados", prefix: "[TC No Facturado]" },

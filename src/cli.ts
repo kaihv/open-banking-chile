@@ -96,6 +96,13 @@ Ejemplos:
     process.exit(1);
   }
 
+  if (flags.has("--screenshots")) {
+    console.warn(
+      "⚠️  --screenshots guarda imágenes y HTML con datos bancarios en ./screenshots/ y ./debug/\n" +
+      "   No compartas estos archivos ni los subas a git."
+    );
+  }
+
   const result = await bank.scrape({
     rut,
     password,

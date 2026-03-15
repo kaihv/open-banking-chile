@@ -50,13 +50,15 @@ export async function saveScreenshot(
   debugLog: string[]
 ): Promise<void> {
   if (!enabled) return;
+  // Sanitize name to prevent path traversal
+  const safeName = name.replace(/[/\\:*?"<>|]/g, "_");
   const dir = path.resolve("screenshots");
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   await page.screenshot({
-    path: path.join(dir, `${name}.png`),
+    path: path.join(dir, `${safeName}.png`),
     fullPage: true,
   });
-  debugLog.push(`  Screenshot saved: screenshots/${name}.png`);
+  debugLog.push(`  Screenshot saved: screenshots/${safeName}.png`);
 }
 
 /** Cierra popups y modales genéricos */

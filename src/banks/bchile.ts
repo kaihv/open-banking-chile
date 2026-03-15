@@ -353,7 +353,7 @@ async function login(
 
   // Check for 2FA
   if (await has2FAChallenge(page)) {
-    const timeoutSec = Math.max(30, parseInt(process.env.BCHILE_2FA_TIMEOUT_SEC || "180", 10));
+    const timeoutSec = Math.min(600, Math.max(30, parseInt(process.env.BCHILE_2FA_TIMEOUT_SEC || "180", 10)));
     const timeoutMs = timeoutSec * 1000;
     debugLog.push(`  2FA detectado. Esperando aprobación manual (${timeoutSec}s máx)...`);
     const deadline = Date.now() + timeoutMs;

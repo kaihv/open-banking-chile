@@ -86,7 +86,7 @@ async function has2FAChallenge(page: Page): Promise<boolean> {
 }
 
 async function waitFor2FA(page: Page, debugLog: string[]): Promise<boolean> {
-  const timeoutSec = Math.max(30, parseInt(process.env.ITAU_2FA_TIMEOUT_SEC || "180", 10) || 180);
+  const timeoutSec = Math.min(600, Math.max(30, parseInt(process.env.ITAU_2FA_TIMEOUT_SEC || "180", 10) || 180));
   const deadline = Date.now() + timeoutSec * 1000;
   let pollCount = 0;
 

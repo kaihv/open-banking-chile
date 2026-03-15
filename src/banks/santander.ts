@@ -1006,7 +1006,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     let pageContent = await getCombinedPageText(page);
     if (has2FAChallenge(pageContent)) {
-      const waitSeconds = Math.max(30, parseInt(process.env.SANTANDER_2FA_TIMEOUT_SEC || "180", 10) || 180);
+      const waitSeconds = Math.min(600, Math.max(30, parseInt(process.env.SANTANDER_2FA_TIMEOUT_SEC || "180", 10) || 180));
       debugLog.push(`  2FA detectado. Esperando aprobación manual (${waitSeconds}s máx)...`);
       const approved = await waitForManual2FA(page, debugLog, waitSeconds);
       await doSave(page, "03b-after-2fa-wait");
