@@ -15,6 +15,7 @@ Scrapers open source para bancos chilenos. Obtén tus movimientos bancarios y sa
 | Banco Scotiabank | `scotiabank` | ✅ Funcional |
 | Banco de Chile | `bchile` | ✅ Funcional |
 | BCI | `bci` | ✅ Funcional |
+| Itaú | `itau` | ✅ Funcional |
 | Banco Estado | `estado` | 🔜 Próximamente |
 
 **¿Tu banco no está?** → [Contribuir](#contribuir)
@@ -74,11 +75,17 @@ export BANCOCHILE_PASS=tu_clave
 export EDWARDS_RUT=12345678-9
 export EDWARDS_PASS=tu_clave
 
+
+# Itaú
+export ITAU_RUT=12345678-9
+export ITAU_PASS=tu_clave
+
 # Consultar banco
 npx open-banking-chile --bank falabella --pretty
 npx open-banking-chile --bank santander --pretty
 npx open-banking-chile --bank bchile --pretty
 npx open-banking-chile --bank edwards --pretty
+npx open-banking-chile --bank itau --pretty
 
 # Solo movimientos
 npx open-banking-chile --bank falabella --movements | jq .
