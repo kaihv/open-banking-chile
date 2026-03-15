@@ -285,11 +285,12 @@ async function extractCreditCardData(
     const nacUtilizado = nacSection.match(/Cupo utilizado\s*(?:[\s\S]*?\$\s*([\d.]+))?/);
     const nacTotal = nacSection.match(/Cupo total\s*(?:[\s\S]*?\$\s*([\d.]+))?/);
 
-    // Internacional cupos — extract section
+    // Internacional cupos — extract all USD values in order: total, utilizado, disponible
     const intSection = text.match(/Internacional[\s\S]*?(?=Ofertas|Movimientos|Emergencias|$)/)?.[0] || "";
-    const intDisponible = intSection.match(/Cupo disponible[\s\S]*?USD\$?\s*(-?[\d.,]+)/);
-    const intUtilizado = intSection.match(/Cupo utilizado[\s\S]*?USD\$?\s*(-?[\d.,]+)/);
-    const intTotal = intSection.match(/Cupo total[\s\S]*?USD\$?\s*(-?[\d.,]+)/);
+    const intUsdValues = [...intSection.matchAll(/USD\$?\s*(-?[\d.,]+)/g)].map(m => m[1]);
+    const intTotal = intUsdValues[0] || null;
+    const intUtilizado = intUsdValues[1] || null;
+    const intDisponible = intUsdValues[2] || null;
 
     // Próxima facturación
     const proxFactMatch = text.match(/Próxima facturación\s*(\d{2}\/\d{2}\/\d{4})/);
@@ -320,9 +321,9 @@ async function extractCreditCardData(
       nacDisponible: nacDisponible?.[1],
       nacUtilizado: nacUtilizado?.[1],
       nacTotal: nacTotal?.[1],
-      intDisponible: intDisponible?.[1],
-      intUtilizado: intUtilizado?.[1],
-      intTotal: intTotal?.[1],
+      intDisponible: intDisponible,
+      intUtilizado: intUtilizado,
+      intTotal: intTotal,
       proxFact: proxFactMatch?.[1],
       noFacturados,
     };
@@ -343,18 +344,19 @@ async function extractCreditCardData(
     if (tcInfo.intDisponible) {
       // Chilean format for USD: dots=thousands, comma=decimal (e.g. "6.829,26")
       const parseUsd = (s: string) => parseFloat(s.replace(/\./g, "").replace(",", ".")) || 0;
-      const intUsed = parseUsd(tcInfo.intUtilizado || "0");
+      const intUsed = Math.abs(parseUsd(tcInfo.intUtilizado || "0"));
       const intAvailable = parseUsd(tcInfo.intDisponible || "0");
+      const intTotal = parseUsd(tcInfo.intTotal || "0");
       card.international = {
         used: intUsed,
         available: intAvailable,
-        total: Math.round((intUsed + intAvailable) * 100) / 100,
+        total: intTotal,
         currency: "USD",
       };
     }
 
     if (tcInfo.proxFact) {
-      card.nextBillingDate = tcInfo.proxFact;
+      card.nextBillingDate = normalizeDate(tcInfo.proxFact);
     }
 
     creditCards.push(card);
@@ -370,7 +372,7 @@ async function extractCreditCardData(
       if (amount === 0) continue;
       movements.push({
         date: normalizeDate(m.date),
-        description: `[TC No Facturado] ${m.desc}`,
+        description: `[TC Por Facturar] ${m.desc}`,
         amount: -amount,
         balance: 0,
       });
@@ -409,8 +411,8 @@ async function extractCreditCardData(
     const cuotaInfo = m.cuota ? ` ${m.cuota}` : "";
     movements.push({
       date: normalizeDate(m.date),
-      description: `[TC Facturado] ${m.desc}${cuotaInfo}`,
-      amount: amount > 0 ? -amount : amount, // Positive amounts in the statement are charges
+      description: `[TC Facturados] ${m.desc}${cuotaInfo}`,
+      amount: amount > 0 ? -amount : Math.abs(amount), // Positive = charge (negative), negative = payment/credit (positive)
       balance: 0,
     });
   }
@@ -498,7 +500,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     // Prefix account movements when there are also TC movements
     const prefixedAccountMovements = tcResult.movements.length > 0
-      ? accountMovements.map((m) => ({ ...m, description: `[CC] ${m.description}` }))
+      ? accountMovements.map((m) => ({ ...m, description: `[Cuenta Corriente] ${m.description}` }))
       : accountMovements;
 
     // Combine and deduplicate
