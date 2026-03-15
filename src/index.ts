@@ -37,6 +37,7 @@ export type {
   BankCredentials,
   ScrapeResult,
   ScraperOptions,
+  CreditCardBalance,
 } from "./types";
 
 // Re-export individual banks for direct import

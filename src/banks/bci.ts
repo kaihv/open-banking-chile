@@ -320,7 +320,10 @@ async function fetchAccountMovements(
     }
 
     const movements = await extractMovementsFromFrame(movFrame, debugLog);
-    allMovements.push(...movements);
+    const prefixed = accounts.length > 1
+      ? movements.map(m => ({ ...m, description: `[${account.label}] ${m.description}`.trim() }))
+      : movements;
+    allMovements.push(...prefixed);
     debugLog.push(`    ${movements.length} movements from ${account.label}`);
   }
 
