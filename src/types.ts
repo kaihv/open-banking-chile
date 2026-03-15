@@ -8,6 +8,10 @@ export interface BankMovement {
   amount: number;
   /** Saldo después del movimiento */
   balance: number;
+  /** Titular o adicional (ej: "Titular", "Adicional") */
+  owner?: string;
+  /** Cuotas (ej: "01/01", "02/06") */
+  installments?: string;
 }
 
 /** Saldo de una tarjeta de crédito */
@@ -69,6 +73,8 @@ export interface ScraperOptions extends BankCredentials {
   saveScreenshots?: boolean;
   /** Si es true, usa headless: false (para debugging visual) */
   headful?: boolean;
+  /** Filtro Titular/Adicional para TC (ej: "T" = titular, "A" = adicional, "B" = todos). Default: "B" */
+  owner?: "T" | "A" | "B";
 }
 
 /** Interfaz que debe implementar cada banco */

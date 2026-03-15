@@ -27,6 +27,7 @@ Opciones:
   --headful        Abrir Chrome visible (para debugging)
   --pretty         Formatear JSON con indentación
   --movements      Solo imprimir movimientos (sin metadata)
+  --owner <T|A|B>  Filtro Titular/Adicional para TC (default: B = todos)
   --help, -h       Mostrar esta ayuda
 
 Variables de entorno:
@@ -103,12 +104,18 @@ Ejemplos:
     );
   }
 
+  // Parse --owner flag
+  const ownerIdx = args.indexOf("--owner");
+  const ownerVal = ownerIdx >= 0 ? args[ownerIdx + 1]?.toUpperCase() : undefined;
+  const owner = ownerVal === "T" || ownerVal === "A" || ownerVal === "B" ? ownerVal : undefined;
+
   const result = await bank.scrape({
     rut,
     password,
     chromePath: process.env.CHROME_PATH,
     saveScreenshots: flags.has("--screenshots"),
     headful: flags.has("--headful"),
+    ...(owner && { owner }),
   });
 
   if (!result.success) {

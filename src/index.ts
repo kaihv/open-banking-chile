@@ -1,6 +1,7 @@
 import bchile from "./banks/bchile";
 import bci from "./banks/bci";
 import bice from "./banks/bice";
+import cmr from "./banks/cmr";
 import itau from "./banks/itau";
 import edwards from "./banks/edwards";
 import falabella from "./banks/falabella";
@@ -13,6 +14,7 @@ export const banks: Record<string, BankScraper> = {
   bchile,
   bci,
   bice,
+  cmr,
   edwards,
   falabella,
   itau,
@@ -48,6 +50,7 @@ export type {
 export { default as bchile } from "./banks/bchile";
 export { default as bci } from "./banks/bci";
 export { default as bice } from "./banks/bice";
+export { default as cmr } from "./banks/cmr";
 export { default as edwards } from "./banks/edwards";
 export { default as falabella } from "./banks/falabella";
 export { default as itau } from "./banks/itau";

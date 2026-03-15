@@ -13,6 +13,7 @@ Scrapers open source para bancos chilenos. Obtén tus movimientos bancarios y sa
 | Banco Santander | `santander` | ✅ Funcional |
 | Banco Edwards | `edwards` | ✅ Funcional |
 | Banco Scotiabank | `scotiabank` | ✅ Funcional |
+| CMR Falabella | `cmr` | ✅ Funcional |
 | Banco de Chile | `bchile` | ✅ Funcional |
 | BCI | `bci` | ✅ Funcional |
 | Itaú | `itau` | ✅ Funcional |
@@ -80,6 +81,10 @@ export EDWARDS_PASS=tu_clave
 export ITAU_RUT=12345678-9
 export ITAU_PASS=tu_clave
 
+# CMR Falabella (Tarjeta de Crédito)
+export CMR_RUT=12345678-9
+export CMR_PASS=tu_clave
+
 # Consultar banco
 npx open-banking-chile --bank falabella --pretty
 npx open-banking-chile --bank santander --pretty
@@ -119,6 +124,7 @@ npx open-banking-chile --bank falabella --screenshots --pretty
 | `--movements` | Solo array de movimientos |
 | `--screenshots` | Guardar screenshots locales en `./screenshots/` |
 | `--headful` | Chrome visible (debugging) |
+| `--owner <T\|A\|B>` | Filtro Titular/Adicional para TC (default: B = todos) |
 
 ### Como librería
 
