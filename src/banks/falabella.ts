@@ -1,10 +1,11 @@
 import puppeteer, { type Page } from "puppeteer-core";
-import type { BankMovement, BankScraper, ScrapeResult, ScraperOptions } from "../types";
+import type { BankMovement, BankScraper, CreditCardBalance, ScrapeResult, ScraperOptions } from "../types";
 import { closePopups, delay, findChrome, formatRut, saveScreenshot } from "../utils";
 
 const BANK_URL = "https://www.bancofalabella.cl";
+const SHADOW_HOST = "credit-card-movements";
 
-// ─── Login helpers ─────────────────────────────────────────────
+// ─── Login helpers ──────────────────────────────────────────────
 
 async function fillRut(page: Page, rut: string): Promise<boolean> {
   const formattedRut = formatRut(rut);
@@ -117,7 +118,7 @@ async function clickSubmitButton(page: Page): Promise<boolean> {
   return true;
 }
 
-// ─── Navigation ────────────────────────────────────────────────
+// ─── Account helpers ────────────────────────────────────────────
 
 async function tryExpandDateRange(page: Page, debugLog: string[]): Promise<void> {
   try {
@@ -206,9 +207,7 @@ async function clickNavTarget(page: Page, debugLog: string[]): Promise<boolean> 
   return false;
 }
 
-// ─── Extraction ────────────────────────────────────────────────
-
-async function extractMovements(page: Page): Promise<BankMovement[]> {
+async function extractAccountMovements(page: Page): Promise<BankMovement[]> {
   return await page.evaluate(() => {
     const movements: BankMovement[] = [];
 
@@ -310,13 +309,11 @@ async function extractMovements(page: Page): Promise<BankMovement[]> {
   });
 }
 
-// ─── Pagination ────────────────────────────────────────────────
-
-async function paginateAndExtract(page: Page, debugLog: string[]): Promise<BankMovement[]> {
+async function paginateAccountMovements(page: Page, debugLog: string[]): Promise<BankMovement[]> {
   const allMovements: BankMovement[] = [];
 
   for (let i = 0; i < 20; i++) {
-    const movements = await extractMovements(page);
+    const movements = await extractAccountMovements(page);
     allMovements.push(...movements);
 
     const isDisabled = await page.evaluate(() => {
@@ -327,7 +324,7 @@ async function paginateAndExtract(page: Page, debugLog: string[]): Promise<BankM
           return (btn as HTMLButtonElement).disabled || (btn as HTMLElement).classList.contains("disabled") || (btn as HTMLElement).getAttribute("aria-disabled") === "true";
         }
       }
-      return true; // no "Siguiente" button = last page
+      return true;
     });
 
     if (isDisabled) break;
@@ -346,6 +343,187 @@ async function paginateAndExtract(page: Page, debugLog: string[]): Promise<BankM
   }
 
   return allMovements;
+}
+
+// ─── CMR (TC) helpers ───────────────────────────────────────────
+
+async function waitForCmrMovements(page: Page, timeoutMs = 30000): Promise<void> {
+  try {
+    await page.waitForFunction((host: string) => {
+      const el = document.querySelector(host);
+      if (!el?.shadowRoot) return false;
+      return el.shadowRoot.querySelectorAll("table tbody tr td").length > 0;
+    }, { timeout: timeoutMs }, SHADOW_HOST);
+  } catch { /* timeout — continue */ }
+  await delay(500);
+}
+
+function parseClpAmount(text: string): number {
+  const clean = text.replace(/[^0-9.,]/g, "");
+  const normalized = clean.replace(/\./g, "").replace(",", ".");
+  return parseInt(normalized, 10) || 0;
+}
+
+async function extractCupos(page: Page, debugLog: string[]): Promise<CreditCardBalance | null> {
+  try {
+    const cupoData = await page.evaluate(() => {
+      const text = document.body?.innerText || "";
+
+      let label = "";
+      const labelMatch = text.match(/(CMR\s+\w+(?:\s+\w+)?)\s*\n?\s*[•·*\s]+\s*(\d{4})/i);
+      if (labelMatch) label = `${labelMatch[1]} ****${labelMatch[2]}`;
+
+      const cupoMatch = text.match(/\$([\d.,]+)\s*\n?\s*Cupo de compras/i);
+      const usadoMatch = text.match(/\$([\d.,]+)\s*\n?\s*Cupo utilizado/i);
+      const disponibleMatch = text.match(/\$([\d.,]+)\s*\n?\s*Cupo disponible/i);
+
+      return { label, cupo: cupoMatch?.[1], usado: usadoMatch?.[1], disponible: disponibleMatch?.[1] };
+    });
+
+    if (!cupoData.cupo && !cupoData.disponible) {
+      debugLog.push("  CMR: No cupo data found on page");
+      return null;
+    }
+
+    const total = cupoData.cupo ? parseClpAmount(cupoData.cupo) : 0;
+    const used = cupoData.usado ? parseClpAmount(cupoData.usado) : 0;
+    const available = cupoData.disponible ? parseClpAmount(cupoData.disponible) : 0;
+
+    debugLog.push(`  CMR cupos: total=$${total}, used=$${used}, available=$${available}`);
+    return {
+      label: cupoData.label || "CMR",
+      national: { total, used, available },
+    };
+  } catch (err) {
+    debugLog.push(`  CMR: Could not extract cupos: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+const TAB_IDS: Record<string, string> = {
+  "últimos movimientos": "last-movements",
+  "movimientos facturados": "invoicedMovements",
+};
+
+async function clickCmrTab(page: Page, tabText: string, debugLog: string[]): Promise<boolean> {
+  const tabId = TAB_IDS[tabText.toLowerCase()] || "";
+  const clicked = await page.evaluate((text: string, host: string, radioId: string) => {
+    const shadowEl = document.querySelector(host);
+    const roots: Array<Document | ShadowRoot> = [];
+    if (shadowEl?.shadowRoot) roots.push(shadowEl.shadowRoot);
+    roots.push(document);
+    for (const root of roots) {
+      if (radioId) {
+        const radio = root.querySelector(`#${radioId}`) as HTMLInputElement | null;
+        if (radio) {
+          radio.checked = true;
+          radio.dispatchEvent(new Event("change", { bubbles: true }));
+          radio.click();
+          return true;
+        }
+      }
+      const labels = Array.from(root.querySelectorAll("label"));
+      for (const label of labels) {
+        const t = label.innerText?.trim().toLowerCase() || "";
+        if (t.includes(text.toLowerCase())) {
+          label.click();
+          return true;
+        }
+      }
+    }
+    return false;
+  }, tabText, SHADOW_HOST, tabId);
+
+  if (clicked) debugLog.push(`  CMR: Clicked tab "${tabText}"`);
+  return clicked;
+}
+
+async function extractCmrMovementsFromTable(page: Page): Promise<BankMovement[]> {
+  return await page.evaluate((host: string) => {
+    const movements: BankMovement[] = [];
+
+    const shadowEl = document.querySelector(host);
+    const root = shadowEl?.shadowRoot || document;
+    const tables = root.querySelectorAll("table");
+
+    for (const table of tables) {
+      const rows = Array.from(table.querySelectorAll("tbody tr"));
+
+      for (const row of rows) {
+        const cells = row.querySelectorAll("td");
+        if (cells.length < 4) continue;
+
+        const texts = Array.from(cells).map(c => (c as HTMLElement).innerText?.trim() || "");
+
+        const dateMatch = texts[0]?.match(/(\d{1,2}\/\d{1,2}\/\d{2,4})/);
+        const pendingImg = row.querySelector("td:first-child img[alt*='pendiente'], td:first-child .td-time-img");
+        const isPending = !!pendingImg || texts[0] === "";
+
+        if (!dateMatch && !isPending) continue;
+
+        const date = dateMatch ? dateMatch[1].replace(/\//g, "-") : "pendiente";
+        const description = texts[1] || "";
+        const montoText = texts[3] || "";
+
+        const isNegativeInSource = montoText.includes("-$");
+        const amountMatch = montoText.match(/\$\s*([\d.,]+)/);
+        let amount = 0;
+        if (amountMatch) {
+          const clean = amountMatch[1].replace(/\./g, "").replace(",", ".");
+          const value = parseInt(clean, 10) || 0;
+          amount = isNegativeInSource ? value : -value;
+        }
+
+        const persona = texts[2] || undefined;
+        const installments = texts[4] || undefined;
+
+        if (description && amount !== 0) {
+          movements.push({ date, description, amount, balance: 0, owner: persona, installments });
+        }
+      }
+    }
+
+    return movements;
+  }, SHADOW_HOST);
+}
+
+async function paginateCmrMovements(page: Page, debugLog: string[]): Promise<BankMovement[]> {
+  const allMovements: BankMovement[] = [];
+
+  for (let i = 0; i < 20; i++) {
+    const movements = await extractCmrMovementsFromTable(page);
+    allMovements.push(...movements);
+
+    const hasNext = await page.evaluate((host: string) => {
+      const shadowEl = document.querySelector(host);
+      const root = shadowEl?.shadowRoot || document;
+      const paginationBtns = Array.from(root.querySelectorAll(".btn-pagination"));
+      for (const btn of paginationBtns) {
+        const el = btn as HTMLButtonElement;
+        const img = el.querySelector("img");
+        if (!img) continue;
+        const alt = (img.getAttribute("alt") || "").toLowerCase();
+        const src = img.getAttribute("src") || "";
+        const isNext = alt.includes("avanzar") || alt.includes("siguiente") || alt.includes("next") || src.includes("right-arrow");
+        if (isNext && !el.disabled) {
+          el.click();
+          return true;
+        }
+      }
+      return false;
+    }, SHADOW_HOST);
+
+    if (!hasNext) break;
+    await waitForCmrMovements(page);
+  }
+
+  const seen = new Set<string>();
+  return allMovements.filter(m => {
+    const key = `${m.date}|${m.description}|${m.amount}|${m.owner || ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 // ─── Logout ─────────────────────────────────────────────────────
@@ -367,15 +545,13 @@ async function logout(page: Page, debugLog: string[]): Promise<void> {
       debugLog.push("  Logged out successfully");
       await delay(2000);
     }
-  } catch {
-    // best effort — browser.close() ends the session anyway
-  }
+  } catch { /* best effort */ }
 }
 
-// ─── Main scraper ──────────────────────────────────────────────
+// ─── Main scraper ───────────────────────────────────────────────
 
 async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
-  const { rut, password, chromePath, saveScreenshots: doScreenshots, headful } = options;
+  const { rut, password, chromePath, saveScreenshots: doScreenshots, headful, owner = "B" } = options;
   const bank = "falabella";
 
   if (!rut || !password) {
@@ -398,7 +574,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     browser = await puppeteer.launch({
       executablePath,
       headless: !headful,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--window-size=1280,900", "--disable-blink-features=AutomationControlled"],
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--window-size=1280,900", "--disable-blink-features=AutomationControlled", "--disable-notifications"],
     });
 
     const page = await browser.newPage();
@@ -498,16 +674,16 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     }
 
     debugLog.push(`6. Login OK! URL: ${page.url()}`);
-
-    // Step 6: Close popups
     await closePopups(page);
+    await doSave(page, "04-post-login");
 
-    // Step 7: Navigate to Cartola
-    debugLog.push("7. Looking for Cartola/Movimientos...");
+    // ── Phase 1: Account movements ──────────────────────────────
+
+    debugLog.push("7. [Cuenta] Looking for Cartola/Movimientos...");
     let navigated = await clickNavTarget(page, debugLog);
 
     if (!navigated) {
-      debugLog.push("8. No Cartola link found. Looking for account to click...");
+      debugLog.push("  No Cartola link found. Looking for account to click...");
       const clickedAccount = await page.evaluate(() => {
         const allElements = Array.from(document.querySelectorAll("a, div, button, tr, li"));
         for (const el of allElements) {
@@ -534,19 +710,15 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
       }
     }
 
-    await doSave(page, "04-movements-page");
-
-    // Step 8: Expand date range
+    await doSave(page, "05-account-movements");
     await tryExpandDateRange(page, debugLog);
 
-    // Step 9: Extract movements (with pagination)
-    const movements = await paginateAndExtract(page, debugLog);
-    debugLog.push(`9. Extracted ${movements.length} movements`);
+    const accountMovements = await paginateAccountMovements(page, debugLog);
+    debugLog.push(`8. [Cuenta] Extracted ${accountMovements.length} movements`);
 
-    // Step 10: Get balance
     let balance: number | undefined;
-    if (movements.length > 0 && movements[0].balance > 0) {
-      balance = movements[0].balance;
+    if (accountMovements.length > 0 && accountMovements[0].balance > 0) {
+      balance = accountMovements[0].balance;
     } else {
       balance = await page.evaluate(() => {
         const bodyText = document.body?.innerText || "";
@@ -556,10 +728,122 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
       });
     }
 
-    await doSave(page, "05-final");
+    // ── Phase 2: CMR credit card movements ──────────────────────
+
+    debugLog.push("9. [CMR] Navigating back to dashboard...");
+    await page.goto(BANK_URL, { waitUntil: "networkidle2", timeout: 30000 });
+    await delay(2000);
+    await closePopups(page);
+
+    debugLog.push("10. [CMR] Extracting credit card cupos...");
+    const cmrBalance = await extractCupos(page, debugLog);
+    const creditCards: CreditCardBalance[] = cmrBalance ? [cmrBalance] : [];
+
+    debugLog.push("11. [CMR] Looking for CMR card product...");
+    const cardClicked = await page.evaluate(() => {
+      const cardSelectors = [
+        "#cardDetail0",
+        "[id^='cardDetail']",
+        "app-credit-cards .card",
+        "[class*='credit-card'] .card",
+        "[class*='creditCard']",
+      ];
+      for (const sel of cardSelectors) {
+        const el = document.querySelector(sel);
+        if (el) { (el as HTMLElement).click(); return `Clicked: ${sel}`; }
+      }
+
+      const elements = Array.from(document.querySelectorAll("a, button, div, li, [role='button']"));
+      for (const el of elements) {
+        const text = (el as HTMLElement).innerText?.trim() || "";
+        if (text.toLowerCase().includes("cmr") && text.length < 100) {
+          (el as HTMLElement).click();
+          return `Clicked: "${text.substring(0, 60)}"`;
+        }
+      }
+      return null;
+    });
+
+    if (cardClicked) {
+      debugLog.push(`  ${cardClicked}`);
+      await waitForCmrMovements(page);
+    }
+
+    await doSave(page, "06-cmr-card");
+
+    // Filter by owner if specified
+    if (owner !== "B") {
+      const ownerLabel = owner === "T" ? "Titular" : "Adicional";
+      debugLog.push(`  CMR: Filtering by ${ownerLabel}`);
+      await page.evaluate((host: string, value: string) => {
+        const shadowEl = document.querySelector(host);
+        const root = shadowEl?.shadowRoot || document;
+        const select = root.querySelector("select[name='searchownership']") as HTMLSelectElement | null;
+        if (select) {
+          select.value = value;
+          select.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      }, SHADOW_HOST, owner);
+      await waitForCmrMovements(page);
+    }
+
+    debugLog.push("12. [CMR] Extracting TC por facturar...");
+    const recentMovements = await paginateCmrMovements(page, debugLog);
+    debugLog.push(`  TC por facturar: ${recentMovements.length}`);
+
+    const taggedRecent = recentMovements.map(m => ({
+      ...m,
+      description: `[TC Por Facturar] ${m.description}`,
+    }));
+
+    debugLog.push("13. [CMR] Extracting TC facturados...");
+    const facturadosClicked = await clickCmrTab(page, "movimientos facturados", debugLog);
+
+    let taggedFacturados: BankMovement[] = [];
+    if (facturadosClicked) {
+      try {
+        await page.waitForFunction((host: string) => {
+          const el = document.querySelector(host);
+          if (!el?.shadowRoot) return false;
+          return el.shadowRoot.querySelector("app-invoiced-movements table tbody tr td") !== null;
+        }, { timeout: 30000 }, SHADOW_HOST);
+      } catch { /* timeout */ }
+      await delay(1000);
+      await doSave(page, "07-cmr-facturados");
+
+      const facturadosMovements = await paginateCmrMovements(page, debugLog);
+      debugLog.push(`  TC facturados: ${facturadosMovements.length}`);
+
+      taggedFacturados = facturadosMovements.map(m => ({
+        ...m,
+        description: `[TC Facturados] ${m.description}`,
+      }));
+    }
+
+    // Dedup TC movements across tabs
+    const seenTc = new Set<string>();
+    const tcMovements = [...taggedRecent, ...taggedFacturados].filter(m => {
+      const key = `${m.date}|${m.description}|${m.amount}|${m.owner || ""}`;
+      if (seenTc.has(key)) return false;
+      seenTc.add(key);
+      return true;
+    });
+
+    const allMovements = [...accountMovements, ...tcMovements];
+    debugLog.push(`14. Total movements: ${allMovements.length} (account: ${accountMovements.length}, TC: ${tcMovements.length})`);
+
+    await doSave(page, "08-final");
     const screenshot = await page.screenshot({ encoding: "base64", fullPage: true });
 
-    return { success: true, bank, movements, balance: balance || undefined, screenshot: screenshot as string, debug: debugLog.join("\n") };
+    return {
+      success: true,
+      bank,
+      movements: allMovements,
+      balance: balance || undefined,
+      creditCards: creditCards.length > 0 ? creditCards : undefined,
+      screenshot: screenshot as string,
+      debug: debugLog.join("\n"),
+    };
   } catch (error) {
     return { success: false, bank, movements: [], error: `Error del scraper: ${error instanceof Error ? error.message : String(error)}`, debug: debugLog.join("\n") };
   } finally {
@@ -573,7 +857,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
   }
 }
 
-// ─── Export ────────────────────────────────────────────────────
+// ─── Export ─────────────────────────────────────────────────────
 
 const falabella: BankScraper = {
   id: "falabella",

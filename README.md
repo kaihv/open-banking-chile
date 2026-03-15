@@ -8,12 +8,11 @@ Scrapers open source para bancos chilenos. Obtén tus movimientos bancarios y sa
 
 | Banco | ID | Estado |
 |-------|----|--------|
-| Banco Falabella | `falabella` | ✅ Funcional |
+| Banco Falabella (cuenta + CMR TC) | `falabella` | ✅ Funcional |
 | Banco BICE | `bice` | ✅ Funcional |
 | Banco Santander | `santander` | ✅ Funcional |
 | Banco Edwards | `edwards` | ✅ Funcional |
-| Banco Scotiabank | `scotiabank` | ✅ Funcional |
-| CMR Falabella | `cmr` | ✅ Funcional |
+| Scotiabank | `scotiabank` | ✅ Funcional |
 | Banco de Chile | `bchile` | ✅ Funcional |
 | BCI | `bci` | ✅ Funcional |
 | Itaú | `itau` | ✅ Funcional |
@@ -80,10 +79,6 @@ export EDWARDS_PASS=tu_clave
 # Itaú
 export ITAU_RUT=12345678-9
 export ITAU_PASS=tu_clave
-
-# CMR Falabella (Tarjeta de Crédito)
-export CMR_RUT=12345678-9
-export CMR_PASS=tu_clave
 
 # Consultar banco
 npx open-banking-chile --bank falabella --pretty
