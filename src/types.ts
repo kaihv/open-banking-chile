@@ -8,6 +8,10 @@ export interface BankMovement {
   amount: number;
   /** Saldo después del movimiento */
   balance: number;
+  /** Titular o adicional (ej: "Titular", "Adicional") */
+  owner?: string;
+  /** Cuotas (ej: "01/01", "02/06") */
+  installments?: string;
 }
 
 /** Resultado del scraping */
@@ -35,7 +39,7 @@ export interface CreditCardBalance {
   /** Etiqueta de la tarjeta (ej: "Visa Signature ****1234") */
   label: string;
   /** Cupo nacional */
-  national: { used: number; available: number; total: number };
+  national?: { used: number; available: number; total: number };
   /** Cupo internacional */
   international?: { used: number; available: number; total: number; currency: string };
   /** Fecha próxima facturación */
@@ -60,6 +64,8 @@ export interface ScraperOptions extends BankCredentials {
   saveScreenshots?: boolean;
   /** Si es true, usa headless: false (para debugging visual) */
   headful?: boolean;
+  /** Filtro Titular/Adicional para TC (ej: "T" = titular, "A" = adicional, "B" = todos). Default: "B" */
+  owner?: "T" | "A" | "B";
 }
 
 /** Interfaz que debe implementar cada banco */
