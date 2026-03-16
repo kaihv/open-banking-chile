@@ -1,7 +1,7 @@
 import puppeteer, { type Page } from "puppeteer-core";
 import type { BankMovement, BankScraper, CreditCardBalance, ScrapeResult, ScraperOptions } from "../types.js";
 import { MOVEMENT_SOURCE } from "../types.js";
-import { closePopups, delay, findChrome, formatRut, saveScreenshot, normalizeDate, parseChileanAmount, deduplicateMovements, logout } from "../utils.js";
+import { closePopups, delay, findChrome, formatRut, saveScreenshot, normalizeDate, parseChileanAmount, deduplicateMovements, logout, normalizeInstallments } from "../utils.js";
 
 const LOGIN_URL = "https://banco.itau.cl/wps/portal/newolb/web/login";
 const PORTAL_BASE = "https://banco.itau.cl/wps/myportal/newolb/web";
@@ -407,7 +407,7 @@ async function extractCreditCardData(
       amount: amount > 0 ? -amount : Math.abs(amount),
       balance: 0,
       source: MOVEMENT_SOURCE.credit_card_billed,
-      installments: m.cuota || undefined,
+      installments: normalizeInstallments(m.cuota),
     });
   }
   debugLog.push(`  Facturados: ${facturados.length} movements`);

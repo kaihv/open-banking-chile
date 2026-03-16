@@ -1,7 +1,7 @@
 import puppeteer, { type Page } from "puppeteer-core";
 import type { BankMovement, BankScraper, CreditCardBalance, MovementSource, ScrapeResult, ScraperOptions } from "../types.js";
 import { MOVEMENT_SOURCE } from "../types.js";
-import { closePopups, delay, findChrome, formatRut, saveScreenshot, normalizeDate, deduplicateMovements, logout } from "../utils.js";
+import { closePopups, delay, findChrome, formatRut, saveScreenshot, normalizeDate, deduplicateMovements, logout, normalizeInstallments } from "../utils.js";
 
 const BANK_URL = "https://portalpersonas.bancochile.cl/persona/";
 const API_BASE = "https://portalpersonas.bancochile.cl/mibancochile/rest/persona";
@@ -520,7 +520,7 @@ function facturadoToMovement(tx: ApiTransaccionFacturada, source: MovementSource
     amount: tx.grupo === "pagos" ? Math.abs(tx.montoTransaccion) : -Math.abs(tx.montoTransaccion),
     balance: 0,
     source,
-    installments: tx.cuotas || undefined,
+    installments: normalizeInstallments(tx.cuotas),
   };
 }
 
@@ -725,7 +725,7 @@ async function fetchCreditCardData(
           amount: mov.montoCompra < 0 ? Math.abs(mov.montoCompra) : -Math.abs(mov.montoCompra),
           balance: 0,
           source: MOVEMENT_SOURCE.credit_card_unbilled,
-          installments: mov.despliegueCuotas || undefined,
+          installments: normalizeInstallments(mov.despliegueCuotas),
         });
       }
 

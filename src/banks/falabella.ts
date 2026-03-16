@@ -1,7 +1,7 @@
 import puppeteer, { type Page } from "puppeteer-core";
 import type { BankMovement, BankScraper, CardOwner, CreditCardBalance, ScrapeResult, ScraperOptions } from "../types.js";
 import { MOVEMENT_SOURCE } from "../types.js";
-import { closePopups, delay, findChrome, formatRut, saveScreenshot, logout, parseChileanAmount, deduplicateMovements, normalizeDate, normalizeOwner } from "../utils.js";
+import { closePopups, delay, findChrome, formatRut, saveScreenshot, logout, parseChileanAmount, deduplicateMovements, normalizeDate, normalizeOwner, normalizeInstallments } from "../utils.js";
 
 const BANK_URL = "https://www.bancofalabella.cl";
 const SHADOW_HOST = "credit-card-movements";
@@ -521,6 +521,7 @@ async function paginateCmrMovements(page: Page, debugLog: string[]): Promise<Ban
       ...m,
       date: normalizeDate(m.date),
       owner: normalizeOwner(m.owner),
+      installments: normalizeInstallments(m.installments),
     }))
   );
 }

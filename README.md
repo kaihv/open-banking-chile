@@ -187,7 +187,7 @@ Cada movimiento incluye un campo `source` que indica su origen:
 
 Campos opcionales:
 - `owner`: `"titular"` o `"adicional"` (solo Falabella CMR por ahora)
-- `installments`: cuotas, ej: `"02/06"` (cuando el banco las reporta)
+- `installments`: cuotas en formato `NN/NN`, ej: `"02/06"` = cuota 2 de 6 (Falabella, BChile, Itaú)
 
 ## Seguridad
 
@@ -224,7 +224,9 @@ Los scrapers comparten funciones comunes para evitar duplicación:
 |---------|-------------|
 | `parseChileanAmount(text)` | Parsea montos en formato chileno ($1.234.567) a número |
 | `normalizeDate(raw)` | Normaliza fechas a DD-MM-YYYY (soporta dd/mm/yyyy, "9 mar 2026", etc.) |
-| `deduplicateMovements(movements)` | Elimina movimientos duplicados por fecha+descripción+monto |
+| `normalizeOwner(raw)` | Normaliza owner a `"titular"` o `"adicional"` |
+| `normalizeInstallments(raw)` | Normaliza cuotas a formato NN/NN (ej: "1/3" → "01/03") |
+| `deduplicateMovements(movements)` | Elimina movimientos duplicados por fecha+descripción+monto+source |
 | `logout(page, debugLog)` | Cierra sesión buscando botones comunes (cerrar sesión, salir, etc.) |
 | `formatRut(rut)` | Formatea RUT (12345678-9 → 12.345.678-9) |
 | `findChrome()` | Busca Chrome/Chromium en el sistema |

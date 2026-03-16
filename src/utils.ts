@@ -154,6 +154,16 @@ export function normalizeDate(raw: string): string {
 // ─── Movements ────────────────────────────────────────────────
 
 /**
+ * Normaliza cuotas a formato NN/NN (ej: "1/3" → "01/03", "01/1" → "01/01").
+ */
+export function normalizeInstallments(raw?: string): string | undefined {
+  if (!raw) return undefined;
+  const match = raw.trim().match(/^(\d{1,2})\/(\d{1,2})$/);
+  if (!match) return raw.trim();
+  return `${match[1].padStart(2, "0")}/${match[2].padStart(2, "0")}`;
+}
+
+/**
  * Normaliza el campo owner a valores fijos.
  * "Titular" / "TITULAR" → "titular", "Adicional" / "ADICIONAL" → "adicional"
  */
