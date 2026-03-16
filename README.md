@@ -36,8 +36,8 @@ brew install --cask google-chrome
 ## Instalación
 
 ```bash
-# Desde npm
-npm install open-banking-chile
+# Desde GitHub
+npm install github:kaihv/open-banking-chile
 
 # O clonar el repo
 git clone https://github.com/kaihv/open-banking-chile.git

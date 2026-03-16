@@ -1,6 +1,6 @@
 import puppeteer, { type Page } from "puppeteer-core";
-import type { BankMovement, BankScraper, CreditCardBalance, ScrapeResult, ScraperOptions } from "../types";
-import { closePopups, delay, findChrome, formatRut, saveScreenshot } from "../utils";
+import type { BankMovement, BankScraper, CreditCardBalance, ScrapeResult, ScraperOptions } from "../types.js";
+import { closePopups, delay, findChrome, formatRut, saveScreenshot } from "../utils.js";
 
 const LOGIN_URL = "https://banco.itau.cl/wps/portal/newolb/web/login";
 const PORTAL_BASE = "https://banco.itau.cl/wps/myportal/newolb/web";
@@ -361,7 +361,9 @@ async function extractCreditCardData(
 
     creditCards.push(card);
     debugLog.push(`  Card: ${card.label}`);
-    debugLog.push(`    NAC: used=$${card.national.used}, available=$${card.national.available}`);
+    if (card.national) {
+      debugLog.push(`    NAC: used=$${card.national.used}, available=$${card.national.available}`);
+    }
     if (card.international) {
       debugLog.push(`    INT: used=USD${card.international.used}, available=USD${card.international.available}`);
     }

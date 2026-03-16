@@ -1,8 +1,8 @@
 import * as fs from "fs";
 import * as path from "path";
 import puppeteer, { type Browser, type Frame, type Page } from "puppeteer-core";
-import type { BankMovement, BankScraper, ScrapeResult, ScraperOptions } from "../types";
-import { closePopups, delay, findChrome, formatRut, saveScreenshot } from "../utils";
+import type { BankMovement, BankScraper, ScrapeResult, ScraperOptions } from "../types.js";
+import { closePopups, delay, findChrome, formatRut, saveScreenshot } from "../utils.js";
 
 const BANK_URL = "https://portalpersonas.bancochile.cl/persona/";
 

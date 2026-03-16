@@ -1,6 +1,6 @@
 import puppeteer, { type Page, type Frame } from "puppeteer-core";
-import type { BankMovement, BankScraper, CreditCardBalance, ScrapeResult, ScraperOptions } from "../types";
-import { closePopups, delay, findChrome, formatRut, saveScreenshot } from "../utils";
+import type { BankMovement, BankScraper, CreditCardBalance, ScrapeResult, ScraperOptions } from "../types.js";
+import { closePopups, delay, findChrome, formatRut, saveScreenshot } from "../utils.js";
 
 const LOGIN_URL = "https://www.bci.cl/corporativo/banco-en-linea/personas";
 

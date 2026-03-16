@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { banks, listBanks, getBank } from "./index";
+import { banks, listBanks, getBank } from "./index.js";
 
 async function main() {
   const args = process.argv.slice(2);

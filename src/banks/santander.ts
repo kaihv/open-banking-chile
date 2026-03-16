@@ -1,6 +1,6 @@
 import puppeteer, { type Frame, type Page } from "puppeteer-core";
-import type { BankMovement, BankScraper, ScrapeResult, ScraperOptions } from "../types";
-import { closePopups, delay, findChrome, formatRut, saveScreenshot } from "../utils";
+import type { BankMovement, BankScraper, ScrapeResult, ScraperOptions } from "../types.js";
+import { closePopups, delay, findChrome, formatRut, saveScreenshot } from "../utils.js";
 
 const BANK_URL = "https://banco.santander.cl/personas";
 type LoginContext = Page | Frame;

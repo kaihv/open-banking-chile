@@ -1,6 +1,6 @@
 import puppeteer, { type Page } from "puppeteer-core";
-import type { BankMovement, BankScraper, CreditCardBalance, ScrapeResult, ScraperOptions } from "../types";
-import { closePopups, delay, findChrome, formatRut, saveScreenshot } from "../utils";
+import type { BankMovement, BankScraper, CreditCardBalance, ScrapeResult, ScraperOptions } from "../types.js";
+import { closePopups, delay, findChrome, formatRut, saveScreenshot } from "../utils.js";
 
 const BANK_URL = "https://portalpersonas.bancochile.cl/persona/";
 const API_BASE = "https://portalpersonas.bancochile.cl/mibancochile/rest/persona";

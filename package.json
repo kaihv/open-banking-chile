@@ -2,16 +2,28 @@
   "name": "open-banking-chile",
   "version": "1.0.0",
   "description": "Scrapers open source para bancos chilenos. Obtén tus movimientos y saldo como JSON. Open source scrapers for Chilean banks.",
-  "main": "dist/index.js",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
   "bin": {
     "open-banking-chile": "dist/cli.js"
   },
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
+    "build": "tsup",
+    "dev": "tsup --watch",
     "start": "node dist/cli.js",
-    "prepublishOnly": "npm run build"
+    "prepare": "npm run build"
   },
   "keywords": [
     "open-banking",
@@ -43,6 +55,7 @@
   },
   "devDependencies": {
     "@types/node": "^20",
+    "tsup": "^8.5.1",
     "typescript": "^5"
   }
 }
