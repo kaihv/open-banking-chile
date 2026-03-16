@@ -1108,14 +1108,14 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     }
 
     await doSave(page, "05-final");
-    const screenshot = await page.screenshot({ encoding: "base64", fullPage: true });
+    const screenshot = doScreenshots ? ((await page.screenshot({ encoding: "base64", fullPage: true })) as string) : undefined;
 
     return {
       success: true,
       bank,
       movements: deduplicated,
       balance: balance ?? undefined,
-      screenshot: screenshot as string,
+      screenshot,
       debug: debugLog.join("\n"),
     };
   } catch (error) {

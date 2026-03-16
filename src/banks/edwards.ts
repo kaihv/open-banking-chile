@@ -957,9 +957,9 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     }
 
     await doSave(page, "04-final");
-    const screenshot = await page.screenshot({ encoding: "base64", fullPage: true });
+    const screenshot = doScreenshots ? ((await page.screenshot({ encoding: "base64", fullPage: true })) as string) : undefined;
 
-    return { success: true, bank, movements, balance: balance || undefined, screenshot: screenshot as string, debug: debugLog.join("\n") };
+    return { success: true, bank, movements, balance: balance || undefined, screenshot, debug: debugLog.join("\n") };
   } catch (error) {
     return { success: false, bank, movements: [], error: `Error del scraper: ${error instanceof Error ? error.message : String(error)}`, debug: debugLog.join("\n") };
   } finally {

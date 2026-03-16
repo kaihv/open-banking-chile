@@ -833,7 +833,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     debugLog.push(`14. Total movements: ${allMovements.length} (account: ${accountMovements.length}, TC: ${tcMovements.length})`);
 
     await doSave(page, "08-final");
-    const screenshot = await page.screenshot({ encoding: "base64", fullPage: true });
+    const screenshot = doScreenshots ? ((await page.screenshot({ encoding: "base64", fullPage: true })) as string) : undefined;
 
     return {
       success: true,
@@ -841,7 +841,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
       movements: allMovements,
       balance: balance || undefined,
       creditCards: creditCards.length > 0 ? creditCards : undefined,
-      screenshot: screenshot as string,
+      screenshot,
       debug: debugLog.join("\n"),
     };
   } catch (error) {
