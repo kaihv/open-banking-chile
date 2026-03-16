@@ -1,5 +1,3 @@
-import * as fs from "fs";
-import * as path from "path";
 import puppeteer, { type Browser, type Frame, type Page } from "puppeteer-core";
 import type { BankMovement, BankScraper, ScrapeResult, ScraperOptions } from "../types";
 import { closePopups, delay, findChrome, formatRut, saveScreenshot } from "../utils";
@@ -813,16 +811,6 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     await delay(8000);
     await doSave(page, "02-after-login");
 
-    // When --screenshots: save HTML for DOM inspection (debug/ is in .gitignore)
-    // ⚠️  Este HTML contiene datos bancarios autenticados — no compartir ni commitear
-    if (doScreenshots) {
-      const html = await page.content();
-      const debugDir = path.resolve("debug");
-      if (!fs.existsSync(debugDir)) fs.mkdirSync(debugDir, { recursive: true });
-      fs.writeFileSync(path.join(debugDir, "02-after-login.html"), html, "utf8");
-      debugLog.push("  HTML saved: debug/02-after-login.html (⚠️ contiene datos bancarios)");
-    }
-
     // Banco de Chile/Edwards: no 2FA in login flow
 
     // Check login errors
@@ -874,13 +862,6 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     }
 
     await doSave(page, "03-movements-page");
-    if (doScreenshots) {
-      const html = await page.content();
-      const debugDir = path.resolve("debug");
-      if (!fs.existsSync(debugDir)) fs.mkdirSync(debugDir, { recursive: true });
-      fs.writeFileSync(path.join(debugDir, "03-movements-page.html"), html, "utf8");
-      debugLog.push("  HTML saved: debug/03-movements-page.html (⚠️ contiene movimientos bancarios)");
-    }
 
     // Step 7: Expand date range if available
     await tryExpandDateRange(page, debugLog);
@@ -922,13 +903,6 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     const tcClicked = await clickTcNavTarget(page, debugLog);
     if (tcClicked) {
       await delay(4000);
-      if (doScreenshots) {
-        const html = await page.content();
-        const debugDir = path.resolve("debug");
-        if (!fs.existsSync(debugDir)) fs.mkdirSync(debugDir, { recursive: true });
-        fs.writeFileSync(path.join(debugDir, "03-tc-movements.html"), html, "utf8");
-        debugLog.push("  HTML saved: debug/03-tc-movements.html (⚠️ contiene movimientos tarjeta)");
-      }
       const porFacturar = await clickTcTab(page, "por-facturar");
       if (porFacturar) {
         const tcPorFact = await paginateTcAndExtract(page, "por-facturar", debugLog);
