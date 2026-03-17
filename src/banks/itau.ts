@@ -158,7 +158,7 @@ async function login(
   }
 
   const currentUrl = page.url();
-  debugLog.push(`5. Login OK! URL: ${currentUrl}`);
+  debugLog.push(`5. Login OK!`);
   return { success: true };
 }
 
