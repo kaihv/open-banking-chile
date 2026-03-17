@@ -30,7 +30,7 @@ async function fillRut(page: Page, rut: string, debugLog: string[]): Promise<boo
   }
   await rutEl.click({ clickCount: 3 });
   await rutEl.type(formattedRut, { delay: 45 });
-  debugLog.push(`  RUT filled: ${formattedRut}`);
+  debugLog.push("  RUT filled");
   return true;
 }
 
