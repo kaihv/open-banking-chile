@@ -250,7 +250,7 @@ async function login(
     debugLog.push(`  Warning: URL post-login no reconocida: ${currentUrl}`);
   }
 
-  debugLog.push(`4. Login OK! URL: ${currentUrl}`);
+  debugLog.push(`4. Login OK!`);
   return { success: true };
 }
 

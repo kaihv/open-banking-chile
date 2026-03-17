@@ -1018,7 +1018,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
       };
     }
 
-    debugLog.push(`6. Login OK! URL: ${page.url()}`);
+    debugLog.push(`6. Login OK!`);
 
     // Step 6: Close popups + Scotia tutorial
     await closePopups(page);

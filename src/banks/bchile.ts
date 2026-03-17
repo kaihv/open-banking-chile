@@ -385,7 +385,7 @@ async function login(
     return { success: false, error: "Login failed — aún en página de login", screenshot: screenshot as string };
   }
 
-  debugLog.push(`4. Login OK! URL: ${currentUrl}`);
+  debugLog.push(`4. Login OK!`);
   return { success: true };
 }
 
