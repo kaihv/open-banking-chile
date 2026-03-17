@@ -655,6 +655,9 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     await closePopups(page);
     await doSave(page, "04-post-login");
 
+    // Save dashboard URL for returning after account movements phase
+    const dashboardUrl = page.url();
+
     // ── Phase 1: Account movements ──────────────────────────────
 
     debugLog.push("7. [Cuenta] Looking for Cartola/Movimientos...");
@@ -708,8 +711,8 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     // ── Phase 2: CMR credit card movements ──────────────────────
 
-    debugLog.push("9. [CMR] Navigating back to dashboard...");
-    await page.goto(BANK_URL, { waitUntil: "networkidle2", timeout: 30000 });
+    debugLog.push("9. [CMR] Navigating back to authenticated dashboard...");
+    await page.goto(dashboardUrl, { waitUntil: "networkidle2", timeout: 30000 });
     await delay(2000);
     await closePopups(page);
 
