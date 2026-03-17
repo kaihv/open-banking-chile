@@ -673,7 +673,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
       return { success: false, bank, movements: [], error: `Error del banco: ${errorCheck}`, screenshot: screenshot as string, debug: debugLog.join("\n") };
     }
 
-    debugLog.push(`6. Login OK! URL: ${page.url()}`);
+    debugLog.push(`6. Login OK!`);
     await closePopups(page);
     await doSave(page, "04-post-login");
 

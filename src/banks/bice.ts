@@ -137,7 +137,7 @@ async function login(
     return { success: false, error: `Error de login: ${errorText || "Credenciales inválidas"}`, screenshot: screenshot as string };
   }
 
-  debugLog.push(`8. Login OK! URL: ${currentUrl}`);
+  debugLog.push(`8. Login OK!`);
   return { success: true, activePage: loginPage };
 }
 

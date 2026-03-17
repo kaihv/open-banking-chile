@@ -1085,7 +1085,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
       };
     }
 
-    debugLog.push(`6. Login OK. URL: ${page.url()}`);
+    debugLog.push(`6. Login OK.`);
 
     await closePopups(page);
 
