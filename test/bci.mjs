@@ -1,6 +1,5 @@
-import pkg from "../dist/index.js";
-const { bci } = pkg;
 import { readFileSync } from "fs";
+import { bci } from "../dist/index.js";
 
 const env = Object.fromEntries(
   readFileSync(".env", "utf8").split("\n")

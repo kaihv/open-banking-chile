@@ -1,9 +1,10 @@
 import bchile from "./banks/bchile.js";
 import bci from "./banks/bci.js";
+import bestado from "./banks/bestado.js";
 import bice from "./banks/bice.js";
-import itau from "./banks/itau.js";
 import edwards from "./banks/edwards.js";
 import falabella from "./banks/falabella.js";
+import itau from "./banks/itau.js";
 import santander from "./banks/santander.js";
 import scotiabank from "./banks/scotiabank.js";
 import type { BankScraper } from "./types.js";
@@ -12,6 +13,7 @@ import type { BankScraper } from "./types.js";
 export const banks: Record<string, BankScraper> = {
   bchile,
   bci,
+  bestado,
   bice,
   edwards,
   falabella,
@@ -51,6 +53,7 @@ export { MOVEMENT_SOURCE, CARD_OWNER } from "./types.js";
 // Re-export individual banks for direct import
 export { default as bchile } from "./banks/bchile.js";
 export { default as bci } from "./banks/bci.js";
+export { default as bestado } from "./banks/bestado.js";
 export { default as bice } from "./banks/bice.js";
 export { default as edwards } from "./banks/edwards.js";
 export { default as falabella } from "./banks/falabella.js";

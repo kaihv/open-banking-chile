@@ -1,5 +1,5 @@
 import { readFileSync } from "fs";
-import { itau } from "../dist/index.js";
+import { bestado } from "../dist/index.js";
 
 const env = Object.fromEntries(
   readFileSync(".env", "utf8").split("\n")
@@ -7,9 +7,9 @@ const env = Object.fromEntries(
     .map(l => { const i = l.indexOf("="); return [l.slice(0, i).trim(), l.slice(i + 1).trim()]; })
 );
 
-const result = await itau.scrape({
-  rut: env.ITAU_RUT,
-  password: env.ITAU_PASS,
+const result = await bestado.scrape({
+  rut: env.BESTADO_RUT,
+  password: env.BESTADO_PASS,
   headful: process.argv.includes("--headful"),
   saveScreenshots: process.argv.includes("--screenshots"),
 });

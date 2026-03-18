@@ -40,7 +40,7 @@ También en esta versión: utilidades compartidas (`parseChileanAmount`, `normal
 | Banco de Chile | `bchile` | ✅ Funcional |
 | BCI | `bci` | ✅ Funcional |
 | Itaú | `itau` | ✅ Funcional |
-| Banco Estado | `estado` | 🔜 Próximamente |
+| Banco Estado (CuentaRUT) | `bestado` | ✅ Funcional |
 
 **¿Tu banco no está?** → [Contribuir](#contribuir)
 
@@ -104,12 +104,17 @@ export EDWARDS_PASS=tu_clave
 export ITAU_RUT=12345678-9
 export ITAU_PASS=tu_clave
 
+# Banco Estado
+export BESTADO_RUT=12345678-9
+export BESTADO_PASS=tu_clave
+
 # Consultar banco
 npx open-banking-chile --bank falabella --pretty
 npx open-banking-chile --bank santander --pretty
 npx open-banking-chile --bank bchile --pretty
 npx open-banking-chile --bank edwards --pretty
 npx open-banking-chile --bank itau --pretty
+npx open-banking-chile --bank bestado --pretty
 
 # Solo movimientos
 npx open-banking-chile --bank falabella --movements | jq .
@@ -130,7 +135,7 @@ npx open-banking-chile --bank falabella --screenshots --pretty
 | `--pretty` | JSON formateado |
 | `--movements` | Solo array de movimientos |
 | `--screenshots` | Guardar screenshots locales en `./screenshots/` |
-| `--headful` | Chrome visible (debugging) |
+| `--headful` | Chrome visible (debugging). **BancoEstado siempre usa headful** |
 | `--owner <T\|A\|B>` | Filtro Titular/Adicional para TC (default: B = todos) |
 
 ### Como librería
@@ -231,6 +236,7 @@ src/
   cli.ts                — CLI entry point
   banks/
     falabella.ts        — Banco Falabella + CMR (cuenta + tarjeta de crédito)
+    bestado.ts          — Banco Estado (CuentaRUT, requiere headful)
     bchile.ts           — Banco de Chile (REST API)
     bci.ts              — BCI (iframes)
     bice.ts             — Banco BICE
@@ -296,6 +302,7 @@ interface BankScraper {
 | 2FA / Clave dinámica | Si aparece, apruébalo manualmente en tu banco y vuelve a intentar |
 | 0 movimientos | Usa `--screenshots --pretty` y revisa el debug log |
 | Login falla | Verifica RUT y clave, prueba con `--headful` |
+| BancoEstado bloqueado | BancoEstado bloquea headless. Siempre abre Chrome visible (requiere pantalla, no funciona en servidores sin GUI) |
 
 ## License
 
