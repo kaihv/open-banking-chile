@@ -89,7 +89,7 @@ Ejemplos:
   const rut = process.env[`${prefix}_RUT`];
   const password = process.env[`${prefix}_PASS`];
 
-  console.log(`Consultando banco: ${bank.name} (${bankId})...`);
+  console.error(`Consultando banco: ${bank.name} (${bankId})...`);
 
   if (!rut || !password) {
     console.error(
