@@ -77,38 +77,38 @@ Configura tu archivo `.env` con tus credenciales:
 
 ```bash
 # Banco Falabella
-export FALABELLA_RUT=12345678-9
-export FALABELLA_PASS=tu_clave
+FALABELLA_RUT=12345678-9
+FALABELLA_PASS=tu_clave
 
 # Banco BICE
-export BICE_RUT=12345678-9
-export BICE_PASS=tu_clave
+BICE_RUT=12345678-9
+BICE_PASS=tu_clave
 ## Opcional:  
-export BICE_MONTHS=1 
+BICE_MONTHS=1 
 
 # Banco Santander
-export SANTANDER_RUT=12345678-9
-export SANTANDER_PASS=tu_clave
+SANTANDER_RUT=12345678-9
+SANTANDER_PASS=tu_clave
 
 # Banco de Chile
-export BANCOCHILE_RUT=12345678-9
-export BANCOCHILE_PASS=tu_clave
+BANCOCHILE_RUT=12345678-9
+BANCOCHILE_PASS=tu_clave
 
 # Banco Edwards
-export EDWARDS_RUT=12345678-9
-export EDWARDS_PASS=tu_clave
+EDWARDS_RUT=12345678-9
+EDWARDS_PASS=tu_clave
 
 
 # Itaú
-export ITAU_RUT=12345678-9
-export ITAU_PASS=tu_clave
+ITAU_RUT=12345678-9
+ITAU_PASS=tu_clave
 
 # Banco Estado
-export BESTADO_RUT=12345678-9
-export BESTADO_PASS=tu_clave
+BESTADO_RUT=12345678-9
+BESTADO_PASS=tu_clave
 ```
 
-Ejecuta la librería mediante CLI, `dotenv` incluirá automáticamente las variables de entorno.
+Ejecuta la librería con el comando `npx`, `dotenv` incluirá automáticamente las variables de entorno.
 
 ```bash
 
