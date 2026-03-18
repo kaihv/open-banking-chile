@@ -51,6 +51,7 @@
     "node": ">=18"
   },
   "dependencies": {
+    "dotenv": "^17.3.1",
     "puppeteer-core": "^24.0.0"
   },
   "devDependencies": {
