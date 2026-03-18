@@ -1,6 +1,8 @@
 import * as fs from "fs";
 import * as path from "path";
 import type { Page } from "puppeteer-core";
+import type { BankMovement, CardOwner } from "./types.js";
+import { CARD_OWNER } from "./types.js";
 
 /** Formatea un RUT chileno (ej: "123456789" → "12.345.678-9") */
 export function formatRut(rut: string): string {
@@ -81,4 +83,136 @@ export async function closePopups(page: Page): Promise<void> {
     }
   });
   await delay(1000);
+}
+
+// ─── Parsing ──────────────────────────────────────────────────
+
+/** Mapa de meses en español a número */
+export const MONTHS_MAP: Record<string, string> = {
+  ene: "01", feb: "02", mar: "03", abr: "04", may: "05", jun: "06",
+  jul: "07", ago: "08", sep: "09", oct: "10", nov: "11", dic: "12",
+};
+
+/**
+ * Parsea un monto en formato chileno a número entero.
+ * Maneja: "$1.234.567", "-$50.000", "$1.234,56" (CLP con decimales).
+ */
+export function parseChileanAmount(text: string): number {
+  const clean = text.replace(/[^0-9.,-]/g, "");
+  if (!clean) return 0;
+  const isNegative = clean.startsWith("-") || text.includes("-$");
+  // Remove thousand separators (dots), convert decimal comma to dot
+  const normalized = clean.replace(/-/g, "").replace(/\./g, "").replace(",", ".");
+  const amount = parseInt(normalized, 10) || 0;
+  return isNegative ? -amount : amount;
+}
+
+// ─── Dates ────────────────────────────────────────────────────
+
+/**
+ * Normaliza fechas a formato DD-MM-YYYY.
+ * Soporta: dd/mm/yyyy, dd.mm.yyyy, dd-mm-yyyy, dd/mm, "9 mar 2026".
+ */
+export function normalizeDate(raw: string): string {
+  const value = raw.trim();
+
+  // dd/mm/yyyy, dd.mm.yyyy, dd-mm-yyyy (con año 2 o 4 dígitos)
+  const fullMatch = value.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})$/);
+  if (fullMatch) {
+    const day = fullMatch[1].padStart(2, "0");
+    const month = fullMatch[2].padStart(2, "0");
+    const year = fullMatch[3].length === 2 ? `20${fullMatch[3]}` : fullMatch[3];
+    return `${day}-${month}-${year}`;
+  }
+
+  // dd/mm (sin año, asume año actual)
+  const shortMatch = value.match(/^(\d{1,2})[\/.\-](\d{1,2})$/);
+  if (shortMatch) {
+    const day = shortMatch[1].padStart(2, "0");
+    const month = shortMatch[2].padStart(2, "0");
+    return `${day}-${month}-${new Date().getFullYear()}`;
+  }
+
+  // "9 mar 2026" (día mes_texto año)
+  const parts = value.split(/\s+/);
+  if (parts.length >= 2) {
+    const monthKey = parts.length === 3 ? parts[1].toLowerCase() : parts[0].toLowerCase();
+    if (MONTHS_MAP[monthKey]) {
+      if (parts.length === 3) {
+        return `${parts[0].padStart(2, "0")}-${MONTHS_MAP[monthKey]}-${parts[2]}`;
+      }
+      const dayPart = parts.find((p) => /^\d{1,2}$/.test(p));
+      if (dayPart) {
+        return `${dayPart.padStart(2, "0")}-${MONTHS_MAP[monthKey]}-${new Date().getFullYear()}`;
+      }
+    }
+  }
+
+  return value;
+}
+
+// ─── Movements ────────────────────────────────────────────────
+
+/**
+ * Normaliza cuotas a formato NN/NN (ej: "1/3" → "01/03", "01/1" → "01/01").
+ */
+export function normalizeInstallments(raw?: string): string | undefined {
+  if (!raw) return undefined;
+  const match = raw.trim().match(/^(\d{1,2})\/(\d{1,2})$/);
+  if (!match) return raw.trim();
+  return `${match[1].padStart(2, "0")}/${match[2].padStart(2, "0")}`;
+}
+
+/**
+ * Normaliza el campo owner a valores fijos.
+ * "Titular" / "TITULAR" → "titular", "Adicional" / "ADICIONAL" → "adicional"
+ */
+export function normalizeOwner(raw?: string): CardOwner | undefined {
+  if (!raw) return undefined;
+  const lower = raw.trim().toLowerCase();
+  if (lower.includes("adicional")) return CARD_OWNER.adicional;
+  if (lower.includes("titular")) return CARD_OWNER.titular;
+  return CARD_OWNER.titular; // default si hay owner pero no matchea
+}
+
+/** Elimina movimientos duplicados por fecha+descripción+monto+balance+source+owner */
+export function deduplicateMovements(movements: BankMovement[]): BankMovement[] {
+  const seen = new Set<string>();
+  return movements.filter((m) => {
+    const key = `${m.date}|${m.description}|${m.amount}|${m.balance ?? ""}|${m.source}|${m.owner ?? ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+// ─── Session ──────────────────────────────────────────────────
+
+/** Cierra sesión buscando botones de logout comunes */
+export async function logout(page: Page, debugLog: string[]): Promise<void> {
+  try {
+    const clicked = await page.evaluate(() => {
+      const elements = Array.from(document.querySelectorAll("a, button, span, div, li"));
+      for (const el of elements) {
+        const text = (el as HTMLElement).innerText?.trim().toLowerCase();
+        if (
+          text === "cerrar sesión" ||
+          text === "cerrar sesion" ||
+          text === "salir" ||
+          text === "logout" ||
+          text === "sign out"
+        ) {
+          (el as HTMLElement).click();
+          return true;
+        }
+      }
+      return false;
+    });
+    if (clicked) {
+      debugLog.push("  Logged out successfully");
+      await delay(2000);
+    }
+  } catch {
+    // best effort — browser.close() ends the session anyway
+  }
 }

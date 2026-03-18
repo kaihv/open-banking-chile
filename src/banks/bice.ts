@@ -1,27 +1,9 @@
 import puppeteer, { type Page } from "puppeteer-core";
-import type { BankMovement, BankScraper, ScrapeResult, ScraperOptions } from "../types";
-import { closePopups, delay, findChrome, saveScreenshot } from "../utils";
+import type { BankMovement, BankScraper, ScrapeResult, ScraperOptions } from "../types.js";
+import { MOVEMENT_SOURCE } from "../types.js";
+import { closePopups, delay, findChrome, saveScreenshot, normalizeDate, parseChileanAmount, deduplicateMovements, logout } from "../utils.js";
 
 const BANK_URL = "https://banco.bice.cl/personas";
-
-const MONTHS_MAP: Record<string, string> = {
-  ene: "01", feb: "02", mar: "03", abr: "04", may: "05", jun: "06",
-  jul: "07", ago: "08", sep: "09", oct: "10", nov: "11", dic: "12",
-};
-
-function normalizeDate(raw: string): string {
-  // "9 mar 2026" -> "09-03-2026"
-  const parts = raw.trim().split(/\s+/);
-  if (parts.length !== 3) return raw;
-  const day = parts[0].padStart(2, "0");
-  const month = MONTHS_MAP[parts[1].toLowerCase()] || parts[1];
-  const year = parts[2];
-  return `${day}-${month}-${year}`;
-}
-
-function parseChileanAmount(text: string): number {
-  return parseInt(text.replace(/[^0-9]/g, ""), 10) || 0;
-}
 
 // ─── Login ──────────────────────────────────────────────────────
 
@@ -218,8 +200,8 @@ async function extractCurrentMonthMovements(page: Page): Promise<BankMovement[]>
     const amountVal = parseChileanAmount(r.amount);
     if (amountVal === 0) return null;
     const amount = r.category.includes("cargo") ? -amountVal : amountVal;
-    return { date: normalizeDate(r.date), description: r.description, amount, balance: parseChileanAmount(r.balance) };
-  }).filter((m): m is BankMovement => m !== null);
+    return { date: normalizeDate(r.date), description: r.description, amount, balance: parseChileanAmount(r.balance), source: MOVEMENT_SOURCE.account };
+  }).filter(Boolean) as BankMovement[];
 }
 
 async function extractHistoricalMovements(page: Page, debugLog: string[]): Promise<BankMovement[]> {
@@ -255,8 +237,8 @@ async function extractHistoricalMovements(page: Page, debugLog: string[]): Promi
     const amountVal = parseChileanAmount(r.amount);
     if (amountVal === 0) return null;
     const amount = r.category.includes("cargo") ? -amountVal : amountVal;
-    return { date: normalizeDate(r.date), description: r.description, amount, balance: 0 };
-  }).filter((m): m is BankMovement => m !== null);
+    return { date: normalizeDate(r.date), description: r.description, amount, balance: 0, source: MOVEMENT_SOURCE.account };
+  }).filter(Boolean) as BankMovement[];
 }
 
 // ─── Pagination ─────────────────────────────────────────────────
@@ -371,33 +353,6 @@ async function selectPeriod(page: Page, periodIndex: number, debugLog: string[])
   return true;
 }
 
-// ─── Logout ─────────────────────────────────────────────────────
-
-async function logout(page: Page, debugLog: string[]): Promise<void> {
-  try {
-    const clicked = await page.evaluate(() => {
-      const menuItems = document.querySelectorAll("div.txtMenu");
-      for (const item of menuItems) {
-        if ((item as HTMLElement).innerText?.trim() === "Salir") {
-          const parent = item.closest("div.img-head") || item.parentElement;
-          if (parent) {
-            (parent as HTMLElement).click();
-            return true;
-          }
-        }
-      }
-      return false;
-    });
-
-    if (clicked) {
-      debugLog.push("  Logged out successfully");
-      await delay(2000);
-    }
-  } catch {
-    // best effort — browser.close() will end the session
-  }
-}
-
 // ─── Main scraper ───────────────────────────────────────────────
 
 async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
@@ -490,13 +445,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     }
 
     // Deduplicate
-    const seen = new Set<string>();
-    const deduplicated = movements.filter((m) => {
-      const key = `${m.date}|${m.description}|${m.amount}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+    const deduplicated = deduplicateMovements(movements);
 
     debugLog.push(`  Total: ${deduplicated.length} unique movements`);
 

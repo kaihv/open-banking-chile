@@ -1,43 +1,12 @@
 import puppeteer, { type Page } from "puppeteer-core";
-import type { BankMovement, BankScraper, CreditCardBalance, ScrapeResult, ScraperOptions } from "../types";
-import { closePopups, delay, findChrome, formatRut, saveScreenshot } from "../utils";
+import type { BankMovement, BankScraper, CreditCardBalance, MovementSource, ScrapeResult, ScraperOptions } from "../types.js";
+import { MOVEMENT_SOURCE } from "../types.js";
+import { closePopups, delay, findChrome, formatRut, saveScreenshot, normalizeDate, deduplicateMovements, logout, normalizeInstallments } from "../utils.js";
 
 const BANK_URL = "https://portalpersonas.bancochile.cl/persona/";
 const API_BASE = "https://portalpersonas.bancochile.cl/mibancochile/rest/persona";
 
-const MONTHS_MAP: Record<string, string> = {
-  ene: "01", feb: "02", mar: "03", abr: "04", may: "05", jun: "06",
-  jul: "07", ago: "08", sep: "09", oct: "10", nov: "11", dic: "12",
-};
-
 // ─── Helpers ──────────────────────────────────────────────────────
-
-function normalizeDate(raw: string): string {
-  const value = raw.trim();
-
-  // dd/mm/yyyy, dd.mm.yyyy, dd-mm-yyyy
-  const fullMatch = value.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})$/);
-  if (fullMatch) {
-    const day = fullMatch[1].padStart(2, "0");
-    const month = fullMatch[2].padStart(2, "0");
-    const year = fullMatch[3].length === 2 ? `20${fullMatch[3]}` : fullMatch[3];
-    return `${day}-${month}-${year}`;
-  }
-
-  // "9 mar 2026" style
-  const parts = value.split(/\s+/);
-  if (parts.length === 3) {
-    const monthKey = parts[1].toLowerCase();
-    if (MONTHS_MAP[monthKey]) {
-      const day = parts[0].padStart(2, "0");
-      const month = MONTHS_MAP[monthKey];
-      const year = parts[2];
-      return `${day}-${month}-${year}`;
-    }
-  }
-
-  return value;
-}
 
 // ─── Login helpers ────────────────────────────────────────────────
 
@@ -534,21 +503,24 @@ type ApiCartolaResponse = {
   pagina: Array<{ totalRegistros: number; masPaginas: boolean }>;
 };
 
-function cartolaMovToMovement(mov: ApiCartolaMov, tag: string): BankMovement {
+function cartolaMovToMovement(mov: ApiCartolaMov): BankMovement {
   return {
     date: normalizeDate(mov.fechaContable),
-    description: `${tag} ${mov.descripcion}`.trim(),
+    description: mov.descripcion.trim(),
     amount: mov.tipo === "cargo" ? -Math.abs(mov.monto) : Math.abs(mov.monto),
     balance: mov.saldo,
+    source: MOVEMENT_SOURCE.account,
   };
 }
 
-function facturadoToMovement(tx: ApiTransaccionFacturada, tag: string): BankMovement {
+function facturadoToMovement(tx: ApiTransaccionFacturada, source: MovementSource): BankMovement {
   return {
     date: normalizeDate(tx.fechaTransaccionString),
-    description: `${tag} ${tx.descripcion} ${tx.cuotas || ""}`.trim(),
+    description: tx.descripcion.trim(),
     amount: tx.grupo === "pagos" ? Math.abs(tx.montoTransaccion) : -Math.abs(tx.montoTransaccion),
     balance: 0,
+    source,
+    installments: normalizeInstallments(tx.cuotas),
   };
 }
 
@@ -611,7 +583,7 @@ async function fetchAccountMovements(
       if (cartola.movimientos) {
         const tag = `[${acct.descripcionLogo} ${acct.mascara}]`;
         for (const mov of cartola.movimientos) {
-          movements.push(cartolaMovToMovement(mov, tag));
+          movements.push(cartolaMovToMovement(mov));
         }
 
         if (balance === undefined && acct.codigoMoneda === "CLP" && cartola.movimientos.length > 0) {
@@ -635,7 +607,7 @@ async function fetchAccountMovements(
             if (count === 0) break;
 
             for (const mov of nextPage.movimientos) {
-              movements.push(cartolaMovToMovement(mov, tag));
+              movements.push(cartolaMovToMovement(mov));
             }
             debugLog.push(`    → offset ${offset}: ${count} movements`);
 
@@ -666,15 +638,13 @@ async function fetchResumenMovements(
   );
 
   if (resumen.existeEstadoCuenta && resumen.seccionOperaciones?.transaccionesTarjetas) {
-    const prefix = endpoint === "internacional" ? `${tag} [INT]` : tag;
     for (const tx of resumen.seccionOperaciones.transaccionesTarjetas ?? []) {
       if (tx.grupo === "totales") continue;
-      movements.push(facturadoToMovement(tx, prefix));
+      movements.push(facturadoToMovement(tx, MOVEMENT_SOURCE.credit_card_billed));
     }
   }
   return movements;
 }
-
 
 async function fetchCreditCardData(
   page: Page,
@@ -751,9 +721,11 @@ async function fetchCreditCardData(
       for (const mov of noFacturados.listaMovNoFactur || []) {
         movements.push({
           date: normalizeDate(mov.fechaTransaccionString),
-          description: `${tag} ${mov.glosaTransaccion} ${mov.despliegueCuotas || ""}`.trim(),
+          description: mov.glosaTransaccion.trim(),
           amount: mov.montoCompra < 0 ? Math.abs(mov.montoCompra) : -Math.abs(mov.montoCompra),
           balance: 0,
+          source: MOVEMENT_SOURCE.credit_card_unbilled,
+          installments: normalizeInstallments(mov.despliegueCuotas),
         });
       }
 
@@ -815,30 +787,6 @@ async function fetchCreditCardData(
   }
 
   return { movements, creditCards };
-}
-
-// ─── Logout ──────────────────────────────────────────────────────
-
-async function logout(page: Page, debugLog: string[]): Promise<void> {
-  try {
-    const clicked = await page.evaluate(() => {
-      const elements = Array.from(document.querySelectorAll("a, button, span, div"));
-      for (const el of elements) {
-        const text = (el as HTMLElement).innerText?.trim().toLowerCase();
-        if (text === "salir" || text === "cerrar sesión" || text === "cerrar sesion" || text === "logout") {
-          (el as HTMLElement).click();
-          return true;
-        }
-      }
-      return false;
-    });
-    if (clicked) {
-      debugLog.push("  Logout: session closed.");
-      await delay(2000);
-    }
-  } catch {
-    // best effort — browser.close() will end the session
-  }
 }
 
 // ─── Main scraper ────────────────────────────────────────────────
@@ -957,13 +905,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     // Combine and deduplicate
     const allMovements = [...accountMovements, ...tcResult.movements];
-    const seen = new Set<string>();
-    const deduplicated = allMovements.filter((m) => {
-      const key = `${m.date}|${m.description}|${m.amount}|${m.balance}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+    const deduplicated = deduplicateMovements(allMovements);
 
     debugLog.push(`8. Total: ${deduplicated.length} unique movements`);
 

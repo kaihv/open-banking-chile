@@ -36,8 +36,8 @@ brew install --cask google-chrome
 ## Instalación
 
 ```bash
-# Desde npm
-npm install open-banking-chile
+# Desde GitHub
+npm install github:kaihv/open-banking-chile
 
 # O clonar el repo
 git clone https://github.com/kaihv/open-banking-chile.git
@@ -97,18 +97,6 @@ npx open-banking-chile --list
 npx open-banking-chile --bank falabella --screenshots --pretty
 ```
 
-**Santander (alcance actual):**
-
-- Extrae movimientos de **Cuenta Corriente** y **Cuenta Vista** (si existen).
-- Extrae movimientos de **Tarjeta de Crédito**:
-  - `MOVIMIENTOS POR FACTURAR`
-  - `MOVIMIENTOS FACTURADOS`
-- En `description`, agrega prefijos para distinguir origen:
-  - `[Cuenta Corriente ...]`
-  - `[Cuenta Vista ...]`
-  - `[TC Por Facturar]`
-  - `[TC Facturados]`
-
 **Opciones CLI:**
 
 | Flag | Descripción |
@@ -163,54 +151,43 @@ if (result.success) {
       "date": "08-03-2026",
       "description": "COMPRA SUPERMERCADO LIDER",
       "amount": -45230,
-      "balance": 1250000
+      "balance": 1250000,
+      "source": "account"
     },
     {
       "date": "07-03-2026",
-      "description": "TRANSFERENCIA RECIBIDA",
-      "amount": 500000,
-      "balance": 1295230
+      "description": "COMPRA COMERCIO",
+      "amount": -15990,
+      "balance": 0,
+      "source": "credit_card_unbilled",
+      "owner": "titular",
+      "installments": "01/03"
+    },
+    {
+      "date": "01-03-2026",
+      "description": "PAGO TARJETA DE CRÉDITO",
+      "amount": 70000,
+      "balance": 0,
+      "source": "credit_card_billed"
     }
   ],
   "balance": 1250000
 }
 ```
 
-### Output Santander (ejemplo)
+### Campo `source`
 
-```json
-{
-  "success": true,
-  "bank": "santander",
-  "movements": [
-    {
-      "date": "15-03-2026",
-      "description": "[Cuenta Corriente 0 000 00 00000 0] TRANSFERENCIA A TERCEROS",
-      "amount": -25000,
-      "balance": 1285000
-    },
-    {
-      "date": "14-03-2026",
-      "description": "[Cuenta Vista 0 000 00 00000 0] DEPÓSITO RECIBIDO",
-      "amount": 42000,
-      "balance": 185000
-    },
-    {
-      "date": "13-03-2026",
-      "description": "[TC Por Facturar] COMPRA COMERCIO DEMO",
-      "amount": -15990,
-      "balance": 0
-    },
-    {
-      "date": "01-03-2026",
-      "description": "[TC Facturados] PAGO TARJETA DE CRÉDITO",
-      "amount": 70000,
-      "balance": 0
-    }
-  ],
-  "balance": 1285000
-}
-```
+Cada movimiento incluye un campo `source` que indica su origen:
+
+| Valor | Descripción |
+|-------|-------------|
+| `account` | Cuenta corriente o vista |
+| `credit_card_unbilled` | Tarjeta de crédito — por facturar |
+| `credit_card_billed` | Tarjeta de crédito — facturado |
+
+Campos opcionales:
+- `owner`: `"titular"` o `"adicional"` (solo Falabella CMR por ahora)
+- `installments`: cuotas en formato `NN/NN`, ej: `"02/06"` = cuota 2 de 6 (Falabella, BChile, Itaú)
 
 ## Seguridad
 
@@ -220,14 +197,52 @@ if (result.success) {
 - Los screenshots de debug pueden contener datos sensibles — no los compartas.
 - Lee [SECURITY.md](SECURITY.md) para más detalles.
 
+## Estructura del proyecto
+
+```
+src/
+  index.ts              — Registro de bancos, getBank(), listBanks()
+  types.ts              — Interfaces: BankScraper, BankMovement, ScrapeResult
+  utils.ts              — Utilidades compartidas (ver abajo)
+  cli.ts                — CLI entry point
+  banks/
+    falabella.ts        — Banco Falabella + CMR (cuenta + tarjeta de crédito)
+    bchile.ts           — Banco de Chile (REST API)
+    bci.ts              — BCI (iframes)
+    bice.ts             — Banco BICE
+    edwards.ts          — Banco Edwards
+    itau.ts             — Itaú
+    santander.ts        — Banco Santander
+    scotiabank.ts       — Scotiabank Chile
+```
+
+### Utilidades compartidas (`utils.ts`)
+
+Los scrapers comparten funciones comunes para evitar duplicación:
+
+| Función | Descripción |
+|---------|-------------|
+| `parseChileanAmount(text)` | Parsea montos en formato chileno ($1.234.567) a número |
+| `normalizeDate(raw)` | Normaliza fechas a DD-MM-YYYY (soporta dd/mm/yyyy, "9 mar 2026", etc.) |
+| `normalizeOwner(raw)` | Normaliza owner a `"titular"` o `"adicional"` |
+| `normalizeInstallments(raw)` | Normaliza cuotas a formato NN/NN (ej: "1/3" → "01/03") |
+| `deduplicateMovements(movements)` | Elimina movimientos duplicados por fecha+descripción+monto+source |
+| `logout(page, debugLog)` | Cierra sesión buscando botones comunes (cerrar sesión, salir, etc.) |
+| `formatRut(rut)` | Formatea RUT (12345678-9 → 12.345.678-9) |
+| `findChrome()` | Busca Chrome/Chromium en el sistema |
+| `closePopups(page)` | Cierra popups y modales genéricos |
+| `delay(ms)` | Espera N milisegundos |
+| `saveScreenshot(page, name, enabled, debugLog)` | Guarda screenshot si está habilitado |
+
 ## Contribuir
 
 Queremos cubrir **todos los bancos de Chile**. Si tienes cuenta en un banco que falta:
 
 1. Lee [CONTRIBUTING.md](CONTRIBUTING.md) para la guía paso a paso
-2. Implementa la interfaz `BankScraper` en `src/banks/<tu-banco>.ts`
-3. Regístralo en `src/index.ts`
-4. Abre un PR
+2. Crea `src/banks/<tu-banco>.ts` implementando `BankScraper`
+3. Usa las utilidades compartidas de `utils.ts` (parsing, fechas, dedup, logout)
+4. Regístralo en `src/index.ts`
+5. Abre un PR
 
 ```typescript
 // La interfaz es simple:
@@ -257,12 +272,6 @@ interface BankScraper {
 | 2FA / Clave dinámica | Si aparece, apruébalo manualmente en tu banco y vuelve a intentar |
 | 0 movimientos | Usa `--screenshots --pretty` y revisa el debug log |
 | Login falla | Verifica RUT y clave, prueba con `--headful` |
-
-### Limitaciones actuales Santander
-
-- El campo `balance` representa la cuenta principal de movimientos (no resume todos los productos).
-- Los movimientos de TC se entregan junto a los bancarios en el mismo array, diferenciados por prefijo en `description`.
-- Cartolas históricas fuera de las vistas cargadas por defecto del portal no están incluidas automáticamente.
 
 ## License
 

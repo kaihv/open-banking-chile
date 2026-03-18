@@ -1,15 +1,34 @@
+/** Origen del movimiento */
+export const MOVEMENT_SOURCE = {
+  account: "account",
+  credit_card_unbilled: "credit_card_unbilled",
+  credit_card_billed: "credit_card_billed",
+} as const;
+
+export type MovementSource = typeof MOVEMENT_SOURCE[keyof typeof MOVEMENT_SOURCE];
+
+/** Titular de la tarjeta */
+export const CARD_OWNER = {
+  titular: "titular",
+  adicional: "adicional",
+} as const;
+
+export type CardOwner = typeof CARD_OWNER[keyof typeof CARD_OWNER];
+
 /** Un movimiento bancario individual */
 export interface BankMovement {
-  /** Fecha del movimiento (formato dd-mm-yyyy o dd/mm/yyyy) */
+  /** Fecha del movimiento (formato dd-mm-yyyy) */
   date: string;
-  /** Descripción del movimiento */
+  /** Descripción del movimiento (sin prefijos de origen) */
   description: string;
   /** Monto: positivo = abono (depósito), negativo = cargo (gasto) */
   amount: number;
   /** Saldo después del movimiento */
   balance: number;
-  /** Titular o adicional (ej: "Titular", "Adicional") */
-  owner?: string;
+  /** Origen: cuenta corriente, TC no facturada, TC facturada */
+  source: MovementSource;
+  /** Titular o adicional de la tarjeta */
+  owner?: CardOwner;
   /** Cuotas (ej: "01/01", "02/06") */
   installments?: string;
 }

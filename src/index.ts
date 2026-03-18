@@ -1,12 +1,12 @@
-import bchile from "./banks/bchile";
-import bci from "./banks/bci";
-import bice from "./banks/bice";
-import itau from "./banks/itau";
-import edwards from "./banks/edwards";
-import falabella from "./banks/falabella";
-import santander from "./banks/santander";
-import scotiabank from "./banks/scotiabank";
-import type { BankScraper } from "./types";
+import bchile from "./banks/bchile.js";
+import bci from "./banks/bci.js";
+import bice from "./banks/bice.js";
+import itau from "./banks/itau.js";
+import edwards from "./banks/edwards.js";
+import falabella from "./banks/falabella.js";
+import santander from "./banks/santander.js";
+import scotiabank from "./banks/scotiabank.js";
+import type { BankScraper } from "./types.js";
 
 /** Registro de todos los bancos disponibles */
 export const banks: Record<string, BankScraper> = {
@@ -37,19 +37,23 @@ export function getBank(id: string): BankScraper | undefined {
 // Re-export types
 export type {
   BankMovement,
+  MovementSource,
+  CardOwner,
   BankScraper,
   BankCredentials,
   ScrapeResult,
   ScraperOptions,
   CreditCardBalance,
-} from "./types";
+} from "./types.js";
+
+export { MOVEMENT_SOURCE, CARD_OWNER } from "./types.js";
 
 // Re-export individual banks for direct import
-export { default as bchile } from "./banks/bchile";
-export { default as bci } from "./banks/bci";
-export { default as bice } from "./banks/bice";
-export { default as edwards } from "./banks/edwards";
-export { default as falabella } from "./banks/falabella";
-export { default as itau } from "./banks/itau";
-export { default as santander } from "./banks/santander";
-export { default as scotiabank } from "./banks/scotiabank";
+export { default as bchile } from "./banks/bchile.js";
+export { default as bci } from "./banks/bci.js";
+export { default as bice } from "./banks/bice.js";
+export { default as edwards } from "./banks/edwards.js";
+export { default as falabella } from "./banks/falabella.js";
+export { default as itau } from "./banks/itau.js";
+export { default as santander } from "./banks/santander.js";
+export { default as scotiabank } from "./banks/scotiabank.js";

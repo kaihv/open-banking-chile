@@ -1,6 +1,7 @@
 import puppeteer, { type Page, type Frame } from "puppeteer-core";
-import type { BankMovement, BankScraper, CreditCardBalance, ScrapeResult, ScraperOptions } from "../types";
-import { closePopups, delay, findChrome, formatRut, saveScreenshot } from "../utils";
+import type { BankMovement, BankScraper, CreditCardBalance, ScrapeResult, ScraperOptions } from "../types.js";
+import { MOVEMENT_SOURCE } from "../types.js";
+import { closePopups, delay, findChrome, formatRut, saveScreenshot, normalizeDate, parseChileanAmount, deduplicateMovements, logout } from "../utils.js";
 
 const LOGIN_URL = "https://www.bci.cl/corporativo/banco-en-linea/personas";
 
@@ -15,54 +16,16 @@ const TWO_FA_KEYWORDS = ["bci pass", "segundo factor", "aprobación en tu app", 
 const TWO_FA_TIMEOUT_SEC = Math.min(600, Math.max(30, parseInt(process.env.BCI_2FA_TIMEOUT_SEC || "180", 10) || 180));
 
 const TC_COMBINATIONS = [
-  { tab: "Nacional $", billingType: "No facturados", prefix: "[TC No Facturado]" },
-  { tab: "Nacional $", billingType: "Facturados", prefix: "[TC Facturado]" },
-  { tab: "Internacional USD", billingType: "No facturados", prefix: "[TC No Facturado INT]" },
-  { tab: "Internacional USD", billingType: "Facturados", prefix: "[TC Facturado INT]" },
-] as const;
+  { tab: "Nacional $", billingType: "No facturados", source: MOVEMENT_SOURCE.credit_card_unbilled },
+  { tab: "Nacional $", billingType: "Facturados", source: MOVEMENT_SOURCE.credit_card_billed },
+  { tab: "Internacional USD", billingType: "No facturados", source: MOVEMENT_SOURCE.credit_card_unbilled },
+  { tab: "Internacional USD", billingType: "Facturados", source: MOVEMENT_SOURCE.credit_card_billed },
+];
 
 const NEXT_PAGE_TEXTS = ["navigate_next", "siguiente"];
 const ACCOUNT_SELECT = "bci-wk-select#cuenta select, select";
 
-const MONTHS_MAP: Record<string, string> = {
-  ene: "01", feb: "02", mar: "03", abr: "04", may: "05", jun: "06",
-  jul: "07", ago: "08", sep: "09", oct: "10", nov: "11", dic: "12",
-};
-
 // ─── Helpers ────────────────────────────────────────────────────
-
-function normalizeDate(raw: string): string {
-  const value = raw.trim();
-
-  const fullMatch = value.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})$/);
-  if (fullMatch) {
-    const day = fullMatch[1].padStart(2, "0");
-    const month = fullMatch[2].padStart(2, "0");
-    const year = fullMatch[3].length === 2 ? `20${fullMatch[3]}` : fullMatch[3];
-    return `${day}-${month}-${year}`;
-  }
-
-  // "9 mar 2026" → "09-03-2026"
-  const parts = value.split(/\s+/);
-  if (parts.length >= 2) {
-    const monthKey = parts.length === 3 ? parts[1].toLowerCase() : parts[0].toLowerCase();
-    if (MONTHS_MAP[monthKey]) {
-      if (parts.length === 3) {
-        return `${parts[0].padStart(2, "0")}-${MONTHS_MAP[monthKey]}-${parts[2]}`;
-      }
-      const dayPart = parts.find((p) => /^\d{1,2}$/.test(p));
-      if (dayPart) {
-        return `${dayPart.padStart(2, "0")}-${MONTHS_MAP[monthKey]}-${new Date().getFullYear()}`;
-      }
-    }
-  }
-
-  return value;
-}
-
-function parseChileanAmount(text: string): number {
-  return parseInt(text.replace(/[^0-9]/g, ""), 10) || 0;
-}
 
 async function clickByTitle(page: Page, title: string): Promise<boolean> {
   return page.evaluate((t: string) => {
@@ -384,6 +347,7 @@ async function extractMovementsFromFrame(frame: Frame, debugLog: string[]): Prom
         description: r.description,
         amount,
         balance: 0,
+        source: MOVEMENT_SOURCE.account,
       });
     }
 
@@ -483,8 +447,9 @@ async function extractTCMovementsFromAngularFrame(
     movements.push({
       date: normalizeDate(r.date),
       description: r.description,
-      amount: -Math.abs(amount), // TC movements are charges (negative)
+      amount: -Math.abs(amount),
       balance: 0,
+      source: MOVEMENT_SOURCE.credit_card_unbilled, // overridden by caller with correct source
     });
   }
 
@@ -543,9 +508,9 @@ async function extractCreditCardInfo(
   // Extract movements from all tab/billing type combinations
   const allTCMovements: BankMovement[] = [];
 
-  for (const { tab, billingType, prefix } of TC_COMBINATIONS) {
+  for (const { tab, billingType, source } of TC_COMBINATIONS) {
     const movements = await extractTCMovementsFromAngularFrame(tcFrame, tab, billingType, debugLog);
-    allTCMovements.push(...movements.map((m) => ({ ...m, description: `${prefix} ${m.description}` })));
+    allTCMovements.push(...movements.map((m) => ({ ...m, source })));
   }
 
   // Get credit card balance from "Cupo disponible" page
@@ -599,21 +564,6 @@ async function extractCreditCardInfo(
   }
 
   return { movements: allTCMovements, creditCards };
-}
-
-// ─── Logout ─────────────────────────────────────────────────────
-
-async function logout(page: Page, debugLog: string[]): Promise<void> {
-  try {
-    const clicked = await page.evaluate(() => {
-      for (const el of document.querySelectorAll("a, button")) {
-        const text = (el as HTMLElement).innerText?.trim().toLowerCase();
-        if (text === "cerrar sesión" || text === "salir") { (el as HTMLElement).click(); return true; }
-      }
-      return false;
-    });
-    if (clicked) { debugLog.push("  Logout OK"); await delay(2000); }
-  } catch { /* best effort */ }
 }
 
 // ─── Main scraper ───────────────────────────────────────────────
@@ -671,21 +621,10 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     const tcResult = await extractCreditCardInfo(page, debugLog, doSave);
     debugLog.push(`  TC movements: ${tcResult.movements.length}, cards: ${tcResult.creditCards.length}`);
 
-    // Prefix account movements when there are also TC movements
-    const prefixedAccountMovements = tcResult.movements.length > 0
-      ? accountMovements.map((m) => ({ ...m, description: `[CC] ${m.description}` }))
-      : accountMovements;
-
-    const allMovements = [...prefixedAccountMovements, ...tcResult.movements];
+    const allMovements = [...accountMovements, ...tcResult.movements];
 
     // Deduplicate
-    const seen = new Set<string>();
-    const deduplicated = allMovements.filter((m) => {
-      const key = `${m.date}|${m.description}|${m.amount}|${m.balance}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+    const deduplicated = deduplicateMovements(allMovements);
 
     debugLog.push(`  Total: ${deduplicated.length} unique movements`);
     await doSave(page, "06-final");

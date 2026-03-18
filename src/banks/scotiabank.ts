@@ -1,9 +1,9 @@
 import puppeteer, { type Page } from "puppeteer-core";
-import type { BankMovement, BankScraper, ScrapeResult, ScraperOptions } from "../types";
-import { closePopups, delay, findChrome, saveScreenshot } from "../utils";
+import type { BankMovement, BankScraper, ScrapeResult, ScraperOptions } from "../types.js";
+import { MOVEMENT_SOURCE } from "../types.js";
+import { closePopups, delay, findChrome, saveScreenshot, normalizeDate, parseChileanAmount, deduplicateMovements, logout } from "../utils.js";
 
 const BANK_URL = "https://www.scotiabank.cl";
-
 
 // ─── Login helpers ─────────────────────────────────────────────
 
@@ -587,26 +587,6 @@ async function navigateToMovements(page: Page, debugLog: string[]): Promise<void
 
 // ─── Extraction ────────────────────────────────────────────────
 
-function parseChileanAmount(value: string): number {
-  const clean = value.replace(/[^0-9-]/g, "");
-  if (!clean) return 0;
-  const isNegative = clean.startsWith("-") || value.includes("-$");
-  const amount = parseInt(clean.replace(/-/g, ""), 10) || 0;
-  return isNegative ? -amount : amount;
-}
-
-function normalizeMovementDate(raw: string): string {
-  const value = raw.trim();
-  const fullMatch = value.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})$/);
-  if (fullMatch) {
-    const day = fullMatch[1].padStart(2, "0");
-    const month = fullMatch[2].padStart(2, "0");
-    const year = fullMatch[3].length === 2 ? `20${fullMatch[3]}` : fullMatch[3];
-    return `${day}-${month}-${year}`;
-  }
-  return value;
-}
-
 type RawMovement = { date: string; description: string; amount: string; balance: string };
 
 /** Extract raw movements from a single frame/page context */
@@ -723,10 +703,11 @@ function parseRawMovements(rawMovements: RawMovement[]): BankMovement[] {
       if (amount === 0) return null;
       const balance = m.balance ? parseChileanAmount(m.balance) : 0;
       return {
-        date: normalizeMovementDate(m.date),
+        date: normalizeDate(m.date),
         description: m.description,
         amount,
         balance,
+        source: MOVEMENT_SOURCE.account,
       } as BankMovement;
     })
     .filter((m): m is BankMovement => {
@@ -813,30 +794,6 @@ async function paginateAndExtract(page: Page, debugLog: string[]): Promise<BankM
     seen.add(key);
     return true;
   });
-}
-
-// ─── Logout ─────────────────────────────────────────────────────
-
-async function logout(page: Page, debugLog: string[]): Promise<void> {
-  try {
-    const clicked = await page.evaluate(() => {
-      const elements = Array.from(document.querySelectorAll("a, button, span, div, li"));
-      for (const el of elements) {
-        const text = (el as HTMLElement).innerText?.trim().toLowerCase();
-        if (text === "cerrar sesión" || text === "salir" || text === "logout" || text === "sign out") {
-          (el as HTMLElement).click();
-          return true;
-        }
-      }
-      return false;
-    });
-    if (clicked) {
-      debugLog.push("  Logged out successfully");
-      await delay(2000);
-    }
-  } catch {
-    // best effort — browser.close() ends the session anyway
-  }
 }
 
 // ─── Main scraper ──────────────────────────────────────────────
@@ -1079,13 +1036,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     }
 
     // Deduplicate
-    const seen = new Set<string>();
-    const deduplicated = movements.filter((m) => {
-      const key = `${m.date}|${m.description}|${m.amount}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+    const deduplicated = deduplicateMovements(movements);
     debugLog.push(`  Total: ${deduplicated.length} unique movements`);
 
     // Step 11: Get balance

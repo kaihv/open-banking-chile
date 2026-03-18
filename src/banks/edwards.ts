@@ -1,6 +1,7 @@
 import puppeteer, { type Browser, type Frame, type Page } from "puppeteer-core";
-import type { BankMovement, BankScraper, ScrapeResult, ScraperOptions } from "../types";
-import { closePopups, delay, findChrome, formatRut, saveScreenshot } from "../utils";
+import type { BankMovement, BankScraper, ScrapeResult, ScraperOptions } from "../types.js";
+import { MOVEMENT_SOURCE } from "../types.js";
+import { closePopups, delay, findChrome, formatRut, saveScreenshot, normalizeDate, parseChileanAmount, deduplicateMovements, logout } from "../utils.js";
 
 const BANK_URL = "https://portalpersonas.bancochile.cl/persona/";
 
@@ -10,43 +11,6 @@ type MovementAccount = { index: number; label: string; active: boolean };
 type TcTab = "por-facturar" | "facturados";
 
 // ─── Extraction helpers (Santander parity) ─────────────────────
-
-function deduplicateMovements(movements: BankMovement[]): BankMovement[] {
-  const seen = new Set<string>();
-  return movements.filter((m) => {
-    const key = `${m.date}|${m.description}|${m.amount}|${m.balance}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function parseChileanAmount(value: string): number {
-  const clean = value.replace(/[^0-9-]/g, "");
-  if (!clean) return 0;
-  const isNegative = clean.startsWith("-") || value.includes("-$");
-  const amount = parseInt(clean.replace(/-/g, ""), 10) || 0;
-  return isNegative ? -amount : amount;
-}
-
-function normalizeMovementDate(raw: string): string {
-  const value = raw.trim();
-  const fullMatch = value.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})$/);
-  if (fullMatch) {
-    const day = fullMatch[1].padStart(2, "0");
-    const month = fullMatch[2].padStart(2, "0");
-    const year = fullMatch[3].length === 2 ? `20${fullMatch[3]}` : fullMatch[3];
-    return `${day}-${month}-${year}`;
-  }
-  const shortMatch = value.match(/^(\d{1,2})[\/.\-](\d{1,2})$/);
-  if (shortMatch) {
-    const day = shortMatch[1].padStart(2, "0");
-    const month = shortMatch[2].padStart(2, "0");
-    const year = String(new Date().getFullYear());
-    return `${day}-${month}-${year}`;
-  }
-  return value;
-}
 
 // ─── Login helpers ─────────────────────────────────────────────
 
@@ -378,13 +342,14 @@ async function extractMovements(page: Page): Promise<BankMovement[]> {
       const amount = parseChileanAmount(m.amount);
       if (amount === 0) return null;
       return {
-        date: normalizeMovementDate(m.date),
+        date: normalizeDate(m.date),
         description: m.description,
         amount,
         balance: m.balance ? parseChileanAmount(m.balance) : 0,
-      } satisfies BankMovement;
+        source: MOVEMENT_SOURCE.account,
+      } as BankMovement;
     })
-    .filter((x): x is BankMovement => x !== null);
+    .filter(Boolean) as BankMovement[];
 
   return deduplicateMovements(parsed);
 }
@@ -465,17 +430,6 @@ async function paginateAndExtract(page: Page, debugLog: string[]): Promise<BankM
   return deduplicateMovements(allMovements);
 }
 
-function accountTag(label: string): string {
-  return `[${label}]`;
-}
-
-function prefixAccountToMovements(movements: BankMovement[], label: string, enabled: boolean): BankMovement[] {
-  if (!enabled) return movements;
-  const tag = accountTag(label);
-  return movements.map((m) =>
-    m.description.startsWith(tag) ? m : { ...m, description: `${tag} ${m.description}`.trim() }
-  );
-}
 
 async function listMovementAccounts(page: Page): Promise<MovementAccount[]> {
   return await page.evaluate((maxX: number) => {
@@ -650,7 +604,7 @@ async function extractCreditCardMovements(page: Page, tab: TcTab): Promise<BankM
     return out;
   });
 
-  const tag = tab === "por-facturar" ? "[TC Por Facturar]" : "[TC Facturados]";
+  const source = tab === "por-facturar" ? MOVEMENT_SOURCE.credit_card_unbilled : MOVEMENT_SOURCE.credit_card_billed;
   return raw
     .map((row) => {
       const abs = Math.abs(parseChileanAmount(row.amount));
@@ -659,13 +613,14 @@ async function extractCreditCardMovements(page: Page, tab: TcTab): Promise<BankM
       if (row.amount.includes("-")) amount = -abs;
       else if (!row.amount.includes("+") && !isCreditCardCredit(row.description)) amount = -abs;
       return {
-        date: normalizeMovementDate(row.date),
-        description: `${tag} ${row.description}`.trim(),
+        date: normalizeDate(row.date),
+        description: row.description.trim(),
         amount,
         balance: 0,
-      } satisfies BankMovement;
+        source,
+      } as BankMovement;
     })
-    .filter((m): m is BankMovement => m !== null);
+    .filter(Boolean) as BankMovement[];
 }
 
 async function paginateTcAndExtract(page: Page, tab: TcTab, debugLog: string[]): Promise<BankMovement[]> {
@@ -686,30 +641,6 @@ async function paginateTcAndExtract(page: Page, tab: TcTab, debugLog: string[]):
   }
 
   return deduplicateMovements(allMovements);
-}
-
-// ─── Logout ─────────────────────────────────────────────────────
-
-async function logout(page: Page, debugLog: string[]): Promise<void> {
-  try {
-    const clicked = await page.evaluate(() => {
-      const elements = Array.from(document.querySelectorAll("a, button, span, div, li"));
-      for (const el of elements) {
-        const text = (el as HTMLElement).innerText?.trim().toLowerCase();
-        if (text === "cerrar sesión" || text === "salir" || text === "logout" || text === "sign out") {
-          (el as HTMLElement).click();
-          return true;
-        }
-      }
-      return false;
-    });
-    if (clicked) {
-      debugLog.push("  Logged out successfully");
-      await delay(2000);
-    }
-  } catch {
-    // best effort — browser.close() ends the session anyway
-  }
 }
 
 // ─── Main scraper ──────────────────────────────────────────────
@@ -876,9 +807,6 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     let movements: BankMovement[] = [];
     if (accounts.length <= 1) {
       movements = await paginateAndExtract(page, debugLog);
-      if (accounts.length === 1) {
-        movements = prefixAccountToMovements(movements, accounts[0].label, multiAccounts);
-      }
     } else {
       for (const account of accounts) {
         const switched = await selectMovementAccount(page, account.index);
@@ -887,7 +815,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
           continue;
         }
         const accountMovements = await paginateAndExtract(page, debugLog);
-        movements.push(...prefixAccountToMovements(accountMovements, account.label, multiAccounts));
+        movements.push(...accountMovements);
         debugLog.push(`  ${account.label}: ${accountMovements.length} movement(s)`);
       }
     }

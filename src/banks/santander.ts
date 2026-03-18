@@ -1,6 +1,7 @@
 import puppeteer, { type Frame, type Page } from "puppeteer-core";
-import type { BankMovement, BankScraper, ScrapeResult, ScraperOptions } from "../types";
-import { closePopups, delay, findChrome, formatRut, saveScreenshot } from "../utils";
+import type { BankMovement, BankScraper, ScrapeResult, ScraperOptions } from "../types.js";
+import { MOVEMENT_SOURCE } from "../types.js";
+import { closePopups, delay, findChrome, formatRut, saveScreenshot, normalizeDate, parseChileanAmount, deduplicateMovements, logout } from "../utils.js";
 
 const BANK_URL = "https://banco.santander.cl/personas";
 type LoginContext = Page | Frame;
@@ -14,45 +15,6 @@ const SIDEBAR_MOVIMIENTOS_ID = "#menu-uid-0413";
 const SIDEBAR_TARJETAS_ID = "#menu-uid-0420";
 const SIDEBAR_MIS_TC_IDS = ["#menu-uid-0421", "#menu-uid-042182"];
 const SIDEBAR_MAX_X = 300; // px — elements beyond this are not in the left sidebar
-
-function deduplicateMovements(movements: BankMovement[]): BankMovement[] {
-  const seen = new Set<string>();
-  return movements.filter((m) => {
-    const key = `${m.date}|${m.description}|${m.amount}|${m.balance}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function parseChileanAmount(value: string): number {
-  const clean = value.replace(/[^0-9-]/g, "");
-  if (!clean) return 0;
-  const isNegative = clean.startsWith("-") || value.includes("-$");
-  const amount = parseInt(clean.replace(/-/g, ""), 10) || 0;
-  return isNegative ? -amount : amount;
-}
-
-function normalizeMovementDate(raw: string): string {
-  const value = raw.trim();
-  const fullMatch = value.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})$/);
-  if (fullMatch) {
-    const day = fullMatch[1].padStart(2, "0");
-    const month = fullMatch[2].padStart(2, "0");
-    const year = fullMatch[3].length === 2 ? `20${fullMatch[3]}` : fullMatch[3];
-    return `${day}-${month}-${year}`;
-  }
-
-  const shortMatch = value.match(/^(\d{1,2})[\/.\-](\d{1,2})$/);
-  if (shortMatch) {
-    const day = shortMatch[1].padStart(2, "0");
-    const month = shortMatch[2].padStart(2, "0");
-    const year = String(new Date().getFullYear());
-    return `${day}-${month}-${year}`;
-  }
-
-  return value;
-}
 
 async function fillRut(context: LoginContext, rut: string): Promise<boolean> {
   const formattedRut = formatRut(rut);
@@ -415,12 +377,13 @@ async function extractMovements(page: Page): Promise<BankMovement[]> {
     const balance = movement.balance ? parseChileanAmount(movement.balance) : 0;
 
     return {
-      date: normalizeMovementDate(movement.date),
+      date: normalizeDate(movement.date),
       description: movement.description,
       amount,
       balance,
-    } satisfies BankMovement;
-  }).filter((movement): movement is BankMovement => movement !== null);
+      source: MOVEMENT_SOURCE.account,
+    } as BankMovement;
+  }).filter(Boolean) as BankMovement[];
 
   return deduplicateMovements(parsed);
 }
@@ -460,18 +423,6 @@ async function paginateAndExtract(page: Page, debugLog: string[]): Promise<BankM
   return deduplicateMovements(allMovements);
 }
 
-function accountTag(label: string): string {
-  return `[${label}]`;
-}
-
-function prefixAccountToMovements(movements: BankMovement[], label: string, enabled: boolean): BankMovement[] {
-  if (!enabled) return movements;
-  const tag = accountTag(label);
-  return movements.map((movement) => {
-    if (movement.description.startsWith(tag)) return movement;
-    return { ...movement, description: `${tag} ${movement.description}`.trim() };
-  });
-}
 
 async function listMovementAccounts(page: Page): Promise<MovementAccount[]> {
   return await page.evaluate(() => {
@@ -698,7 +649,7 @@ async function extractCreditCardMovements(page: Page, tab: TcTab): Promise<BankM
     return out;
   });
 
-  const tag = tab === "por-facturar" ? "[TC Por Facturar]" : "[TC Facturados]";
+  const source = tab === "por-facturar" ? MOVEMENT_SOURCE.credit_card_unbilled : MOVEMENT_SOURCE.credit_card_billed;
   const movements = raw.map((row) => {
     const absAmount = Math.abs(parseChileanAmount(row.amount));
     if (absAmount === 0) return null;
@@ -713,12 +664,13 @@ async function extractCreditCardMovements(page: Page, tab: TcTab): Promise<BankM
     }
 
     return {
-      date: normalizeMovementDate(row.date),
-      description: `${tag} ${row.description}`.trim(),
+      date: normalizeDate(row.date),
+      description: row.description.trim(),
       amount,
       balance: 0,
-    } satisfies BankMovement;
-  }).filter((m): m is BankMovement => m !== null);
+      source,
+    } as BankMovement;
+  }).filter(Boolean) as BankMovement[];
 
   return deduplicateMovements(movements);
 }
@@ -825,28 +777,6 @@ async function navigateToMovements(page: Page, debugLog: string[]): Promise<void
     await delay(4500);
   } else {
     debugLog.push("  No direct movement entry point found from dashboard.");
-  }
-}
-
-async function logout(page: Page, debugLog: string[]): Promise<void> {
-  try {
-    const clicked = await page.evaluate(() => {
-      const elements = Array.from(document.querySelectorAll("a, button, span, div"));
-      for (const el of elements) {
-        const text = (el as HTMLElement).innerText?.trim().toLowerCase();
-        if (text === "cerrar sesión" || text === "salir" || text === "logout" || text === "sign out") {
-          (el as HTMLElement).click();
-          return true;
-        }
-      }
-      return false;
-    });
-    if (clicked) {
-      debugLog.push("  Logout: session closed.");
-      await delay(2000);
-    }
-  } catch {
-    // best effort
   }
 }
 
@@ -1105,9 +1035,6 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     let movements: BankMovement[] = [];
     if (accounts.length <= 1) {
       movements = await paginateAndExtract(page, debugLog);
-      if (accounts.length === 1) {
-        movements = prefixAccountToMovements(movements, accounts[0].label, multiAccounts);
-      }
     } else {
       for (const account of accounts) {
         const switched = await selectMovementAccount(page, account.index);
@@ -1116,7 +1043,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
           continue;
         }
         const accountMovements = await paginateAndExtract(page, debugLog);
-        movements.push(...prefixAccountToMovements(accountMovements, account.label, multiAccounts));
+        movements.push(...accountMovements);
         debugLog.push(`  ${account.label}: ${accountMovements.length} movement(s)`);
       }
     }

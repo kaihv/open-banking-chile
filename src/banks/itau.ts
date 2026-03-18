@@ -1,23 +1,12 @@
 import puppeteer, { type Page } from "puppeteer-core";
-import type { BankMovement, BankScraper, CreditCardBalance, ScrapeResult, ScraperOptions } from "../types";
-import { closePopups, delay, findChrome, formatRut, saveScreenshot } from "../utils";
+import type { BankMovement, BankScraper, CreditCardBalance, ScrapeResult, ScraperOptions } from "../types.js";
+import { MOVEMENT_SOURCE } from "../types.js";
+import { closePopups, delay, findChrome, formatRut, saveScreenshot, normalizeDate, parseChileanAmount, deduplicateMovements, logout, normalizeInstallments } from "../utils.js";
 
 const LOGIN_URL = "https://banco.itau.cl/wps/portal/newolb/web/login";
 const PORTAL_BASE = "https://banco.itau.cl/wps/myportal/newolb/web";
 
 // ─── Helpers ─────────────────────────────────────────────────────
-
-function parseAmount(text: string): number {
-  // Chilean format: dots are thousand separators, no decimal for CLP
-  const clean = text.replace(/[^0-9-]/g, "");
-  return parseInt(clean, 10) || 0;
-}
-
-function normalizeDate(raw: string): string {
-  const m = raw.trim().match(/^(\d{1,2})\/(\d{2})\/(\d{4})$/);
-  if (m) return `${m[1].padStart(2, "0")}-${m[2]}-${m[3]}`;
-  return raw.trim();
-}
 
 // ─── Login helpers ───────────────────────────────────────────────
 
@@ -217,8 +206,8 @@ async function extractMovements(page: Page, debugLog: string[]): Promise<BankMov
     });
 
     for (const m of pageMovements) {
-      const cargoVal = parseAmount(m.cargo);
-      const abonoVal = parseAmount(m.abono);
+      const cargoVal = parseChileanAmount(m.cargo);
+      const abonoVal = parseChileanAmount(m.abono);
       const amount = abonoVal > 0 ? abonoVal : -cargoVal;
       if (amount === 0) continue;
 
@@ -226,7 +215,8 @@ async function extractMovements(page: Page, debugLog: string[]): Promise<BankMov
         date: normalizeDate(m.date),
         description: m.description,
         amount,
-        balance: parseAmount(m.saldo),
+        balance: parseChileanAmount(m.saldo),
+        source: MOVEMENT_SOURCE.account,
       });
     }
 
@@ -330,8 +320,8 @@ async function extractCreditCardData(
   });
 
   if (tcInfo.label) {
-    const nacUsed = parseAmount(tcInfo.nacUtilizado || "0");
-    const nacAvailable = parseAmount(tcInfo.nacDisponible || "0");
+    const nacUsed = parseChileanAmount(tcInfo.nacUtilizado || "0");
+    const nacAvailable = parseChileanAmount(tcInfo.nacDisponible || "0");
     const card: CreditCardBalance = {
       label: tcInfo.label,
       national: {
@@ -361,20 +351,23 @@ async function extractCreditCardData(
 
     creditCards.push(card);
     debugLog.push(`  Card: ${card.label}`);
-    debugLog.push(`    NAC: used=$${card.national.used}, available=$${card.national.available}`);
+    if (card.national) {
+      debugLog.push(`    NAC: used=$${card.national.used}, available=$${card.national.available}`);
+    }
     if (card.international) {
       debugLog.push(`    INT: used=USD${card.international.used}, available=USD${card.international.available}`);
     }
 
     // Add non-facturados movements
     for (const m of tcInfo.noFacturados) {
-      const amount = parseAmount(m.amount);
+      const amount = parseChileanAmount(m.amount);
       if (amount === 0) continue;
       movements.push({
         date: normalizeDate(m.date),
-        description: `[TC Por Facturar] ${m.desc}`,
+        description: m.desc,
         amount: -amount,
         balance: 0,
+        source: MOVEMENT_SOURCE.credit_card_unbilled,
       });
     }
     debugLog.push(`  No-facturados: ${tcInfo.noFacturados.length} movements`);
@@ -406,43 +399,20 @@ async function extractCreditCardData(
   });
 
   for (const m of facturados) {
-    const amount = parseAmount(m.amount);
+    const amount = parseChileanAmount(m.amount);
     if (amount === 0) continue;
-    const cuotaInfo = m.cuota ? ` ${m.cuota}` : "";
     movements.push({
       date: normalizeDate(m.date),
-      description: `[TC Facturados] ${m.desc}${cuotaInfo}`,
-      amount: amount > 0 ? -amount : Math.abs(amount), // Positive = charge (negative), negative = payment/credit (positive)
+      description: m.desc,
+      amount: amount > 0 ? -amount : Math.abs(amount),
       balance: 0,
+      source: MOVEMENT_SOURCE.credit_card_billed,
+      installments: normalizeInstallments(m.cuota),
     });
   }
   debugLog.push(`  Facturados: ${facturados.length} movements`);
 
   return { movements, creditCards };
-}
-
-// ─── Logout ──────────────────────────────────────────────────────
-
-async function logout(page: Page, debugLog: string[]): Promise<void> {
-  try {
-    const logoutClicked = await page.evaluate(() => {
-      const links = document.querySelectorAll("a");
-      for (const link of links) {
-        const text = (link as HTMLElement).innerText?.trim().toLowerCase() || "";
-        if (text === "cerrar sesión") {
-          link.click();
-          return true;
-        }
-      }
-      return false;
-    });
-    if (logoutClicked) {
-      debugLog.push("  Logged out successfully");
-      await delay(2000);
-    }
-  } catch {
-    // best effort
-  }
 }
 
 // ─── Main scraper ────────────────────────────────────────────────
@@ -498,20 +468,9 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     // Extract credit card data
     const tcResult = await extractCreditCardData(page, debugLog);
 
-    // Prefix account movements when there are also TC movements
-    const prefixedAccountMovements = tcResult.movements.length > 0
-      ? accountMovements.map((m) => ({ ...m, description: `[Cuenta Corriente] ${m.description}` }))
-      : accountMovements;
-
     // Combine and deduplicate
-    const allMovements = [...prefixedAccountMovements, ...tcResult.movements];
-    const seen = new Set<string>();
-    const deduplicated = allMovements.filter((m) => {
-      const key = `${m.date}|${m.description}|${m.amount}|${m.balance}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+    const allMovements = [...accountMovements, ...tcResult.movements];
+    const deduplicated = deduplicateMovements(allMovements);
 
     debugLog.push(`9. Total: ${deduplicated.length} unique movements`);
     await doSave(page, "05-final");
