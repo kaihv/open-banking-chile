@@ -232,7 +232,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
   const debugLog: string[] = [];
   const doSave = async (page: Page, name: string) => saveScreenshot(page, name, !!doScreenshots, debugLog);
 
-  // BancoEstado blocks headless browsers — requires a visible Chrome window (display/GUI)
+  // BancoEstado blocks headless browsers (TLS fingerprinting) — requires visible Chrome
   if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
     return {
       success: false, bank, movements: [],

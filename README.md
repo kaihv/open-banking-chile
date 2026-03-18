@@ -302,7 +302,33 @@ interface BankScraper {
 | 2FA / Clave dinámica | Si aparece, apruébalo manualmente en tu banco y vuelve a intentar |
 | 0 movimientos | Usa `--screenshots --pretty` y revisa el debug log |
 | Login falla | Verifica RUT y clave, prueba con `--headful` |
-| BancoEstado bloqueado | BancoEstado bloquea headless. Siempre abre Chrome visible (requiere pantalla, no funciona en servidores sin GUI) |
+| BancoEstado bloqueado | BancoEstado bloquea headless (TLS fingerprinting). Siempre abre Chrome visible. Ver nota abajo |
+
+### BancoEstado y modo headless
+
+BancoEstado detecta navegadores headless a nivel de red (TLS fingerprinting), no solo por JavaScript. Ni `puppeteer-extra-plugin-stealth` ni `rebrowser-puppeteer-core` logran evadir esta detección. El scraper siempre corre en modo headful (Chrome visible).
+
+**En servidores Linux sin GUI**, usa Xvfb (display virtual):
+
+```bash
+# Instalar
+sudo apt install xvfb
+
+# Correr con display virtual
+xvfb-run node dist/cli.js --bank bestado --pretty
+
+# O como parte de tu app
+xvfb-run node tu-app.js
+```
+
+**En Docker:**
+
+```dockerfile
+RUN apt-get update && apt-get install -y xvfb google-chrome-stable
+CMD ["xvfb-run", "node", "server.js"]
+```
+
+**En Mac/Windows** no necesitas nada extra — Chrome se abre y cierra automáticamente.
 
 ## License
 
