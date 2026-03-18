@@ -73,10 +73,9 @@ npm run build
 ## Uso
 
 ### CLI
+Configura tu archivo `.env` con tus credenciales:
 
 ```bash
-# Configurar credenciales
-
 # Banco Falabella
 export FALABELLA_RUT=12345678-9
 export FALABELLA_PASS=tu_clave
@@ -107,6 +106,11 @@ export ITAU_PASS=tu_clave
 # Banco Estado
 export BESTADO_RUT=12345678-9
 export BESTADO_PASS=tu_clave
+```
+
+Ejecuta la librería mediante CLI, `dotenv` incluirá automáticamente las variables de entorno.
+
+```bash
 
 # Consultar banco
 npx open-banking-chile --bank falabella --pretty

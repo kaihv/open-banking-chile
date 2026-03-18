@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-
+import { config } from 'dotenv';
 import { banks, listBanks, getBank } from "./index.js";
+config();
 
 async function main() {
   const args = process.argv.slice(2);
@@ -87,6 +88,8 @@ Ejemplos:
   const prefix = bankId.toUpperCase();
   const rut = process.env[`${prefix}_RUT`];
   const password = process.env[`${prefix}_PASS`];
+
+  console.log(`Consultando banco: ${bank.name} (${bankId})...`);
 
   if (!rut || !password) {
     console.error(
