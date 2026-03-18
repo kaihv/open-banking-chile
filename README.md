@@ -4,6 +4,30 @@ Scrapers open source para bancos chilenos. Obtén tus movimientos bancarios y sa
 
 > **Disclaimer**: Este proyecto no está afiliado con ningún banco. Úsalo bajo tu propia responsabilidad y solo con tus propias credenciales.
 
+## Migración v1 → v2
+
+**v2.0.0 introduce un cambio breaking en la interfaz `BankMovement`:**
+
+El campo `source` ahora es **obligatorio** e indica el origen del movimiento:
+
+| Valor | Descripción |
+|-------|-------------|
+| `"account"` | Cuenta corriente o vista |
+| `"credit_card_unbilled"` | Tarjeta de crédito — por facturar |
+| `"credit_card_billed"` | Tarjeta de crédito — facturado |
+
+Si construyes objetos `BankMovement` manualmente en tu código, agrega el campo `source`. Si solo **consumes** los resultados del scraper, no hay cambios necesarios — todos los scrapers ya lo incluyen.
+
+```ts
+// v1 (ya no válido en TypeScript)
+const mov: BankMovement = { date, description, amount, balance };
+
+// v2
+const mov: BankMovement = { date, description, amount, balance, source: "account" };
+```
+
+También en esta versión: utilidades compartidas (`parseChileanAmount`, `normalizeDate`, `deduplicateMovements`, etc.) disponibles como exports desde `open-banking-chile/utils`.
+
 ## Bancos soportados
 
 | Banco | ID | Estado |
