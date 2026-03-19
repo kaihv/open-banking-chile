@@ -122,16 +122,15 @@ async function dismissAdPopup(page: Page, debugLog: string[]): Promise<void> {
 async function extractCurrentMonthMovements(page: Page): Promise<BankMovement[]> {
   const raw = await page.evaluate(() => {
     const rows = document.querySelectorAll("div.transaction-table__container table tbody tr");
-    const results: Array<{ date: string; category: string; description: string; amount: string; balance: string }> = [];
+    const results: Array<{ date: string; category: string; description: string; amount: string }> = [];
     for (const row of rows) {
       const cells = row.querySelectorAll("td");
-      if (cells.length < 5) continue;
+      if (cells.length < 4) continue;
       results.push({
         date: (cells[0] as HTMLElement).innerText?.trim() || "",
         category: (cells[1] as HTMLElement).innerText?.trim().toLowerCase() || "",
         description: (cells[2] as HTMLElement).innerText?.trim() || "",
         amount: (cells[3] as HTMLElement).innerText?.trim() || "",
-        balance: (cells[4] as HTMLElement).innerText?.trim() || "",
       });
     }
     return results;
@@ -141,7 +140,7 @@ async function extractCurrentMonthMovements(page: Page): Promise<BankMovement[]>
     const amountVal = parseChileanAmount(r.amount);
     if (amountVal === 0) return null;
     const amount = r.category.includes("cargo") ? -amountVal : amountVal;
-    return { date: normalizeDate(r.date), description: r.description, amount, balance: parseChileanAmount(r.balance), source: MOVEMENT_SOURCE.account };
+    return { date: normalizeDate(r.date), description: r.description, amount, balance: 0, source: MOVEMENT_SOURCE.account };
   }).filter(Boolean) as BankMovement[];
 }
 
