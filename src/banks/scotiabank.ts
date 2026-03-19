@@ -799,8 +799,9 @@ async function paginateAndExtract(page: Page, debugLog: string[]): Promise<BankM
 // ─── Main scraper ──────────────────────────────────────────────
 
 async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
-  const { rut, password, chromePath, saveScreenshots: doScreenshots, headful } = options;
+  const { rut, password, chromePath, saveScreenshots: doScreenshots, headful, onProgress } = options;
   const bank = "scotiabank";
+  const progress = onProgress || (() => {});
 
   if (!rut || !password) {
     return { success: false, bank, movements: [], error: "Debes proveer RUT y clave." };
@@ -843,6 +844,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     // Step 1: Navigate to homepage
     debugLog.push("1. Navigating to Scotiabank...");
+    progress("Abriendo sitio del banco...");
     await page.goto(BANK_URL, { waitUntil: "networkidle2", timeout: 30000 });
     await delay(2000);
 
@@ -896,6 +898,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     // Step 3: Fill RUT (field name: inputDni)
     debugLog.push("3. Filling RUT (inputDni)...");
+    progress("Ingresando RUT...");
     const rutFilled = await fillRut(page, rut);
     if (!rutFilled) {
       const screenshot = await page.screenshot({ encoding: "base64" });
@@ -931,6 +934,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     // Step 5: Submit login
     debugLog.push("5. Submitting login...");
+    progress("Iniciando sesión...");
     await clickSubmitButton(page);
     await delay(8000);
     await doSave(page, "03-after-login");
@@ -976,6 +980,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     }
 
     debugLog.push(`6. Login OK!`);
+    progress("Sesión iniciada correctamente");
 
     // Step 6: Close popups + Scotia tutorial
     await closePopups(page);
@@ -983,6 +988,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     // Step 7: Navigate to cartola
     debugLog.push("7. Looking for Cartola/Movimientos...");
+    progress("Buscando cartola de cuenta...");
     await navigateToMovements(page, debugLog);
     await dismissScotiaTutorial(page, debugLog);
     await doSave(page, "04-movements-page");
@@ -993,6 +999,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     // Step 9: Extract current period movements (with pagination)
     const movements = await paginateAndExtract(page, debugLog);
     debugLog.push(`9. Extracted ${movements.length} movements (current period)`);
+    progress(`Periodo actual: ${movements.length} movimientos`);
 
     // Step 10: Historical periods via SCOTIABANK_MONTHS
     const monthsStr = process.env.SCOTIABANK_MONTHS || "0";
@@ -1000,6 +1007,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     if (months > 0) {
       debugLog.push(`10. Fetching ${months} additional period(s)...`);
+      progress(`Extrayendo ${months} periodo(s) histórico(s)...`);
       const now = new Date();
 
       for (let m = 0; m < months; m++) {
@@ -1038,6 +1046,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     // Deduplicate
     const deduplicated = deduplicateMovements(movements);
     debugLog.push(`  Total: ${deduplicated.length} unique movements`);
+    progress(`Listo — ${deduplicated.length} movimientos totales`);
 
     // Step 11: Get balance
     let balance: number | undefined;

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { config } from 'dotenv';
 import { banks, listBanks, getBank } from "./index.js";
+import { Spinner } from "./utils.js";
 config();
 
 async function main() {
@@ -89,7 +90,8 @@ Ejemplos:
   const rut = process.env[`${prefix}_RUT`];
   const password = process.env[`${prefix}_PASS`];
 
-  console.error(`Consultando banco: ${bank.name} (${bankId})...`);
+  const isTTY = process.stderr.isTTY;
+  const spinner = new Spinner();
 
   if (!rut || !password) {
     console.error(
@@ -112,6 +114,12 @@ Ejemplos:
   const ownerVal = ownerIdx >= 0 ? args[ownerIdx + 1]?.toUpperCase() : undefined;
   const owner = ownerVal === "T" || ownerVal === "A" || ownerVal === "B" ? ownerVal : undefined;
 
+  if (isTTY) {
+    spinner.start(`Conectando con ${bank.name}...`);
+  } else {
+    console.error(`Consultando banco: ${bank.name} (${bankId})...`);
+  }
+
   const result = await bank.scrape({
     rut,
     password,
@@ -119,15 +127,22 @@ Ejemplos:
     saveScreenshots: flags.has("--screenshots"),
     headful: flags.has("--headful"),
     ...(owner && { owner }),
+    onProgress: isTTY ? (step) => spinner.update(step) : undefined,
   });
 
   if (!result.success) {
-    console.error(`Error: ${result.error}`);
+    if (isTTY) spinner.fail(result.error || "Error desconocido");
+    else console.error(`Error: ${result.error}`);
     if (result.debug) {
       console.error("\nDebug log:");
       console.error(result.debug);
     }
     process.exit(1);
+  }
+
+  if (isTTY) {
+    const count = result.movements.length;
+    spinner.stop(`${bank.name} — ${count} movimiento${count !== 1 ? "s" : ""} obtenido${count !== 1 ? "s" : ""}`);
   }
 
   const indent = flags.has("--pretty") ? 2 : undefined;

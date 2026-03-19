@@ -418,8 +418,9 @@ async function extractCreditCardData(
 // ─── Main scraper ────────────────────────────────────────────────
 
 async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
-  const { rut, password, chromePath, saveScreenshots: doScreenshots, headful } = options;
+  const { rut, password, chromePath, saveScreenshots: doScreenshots, headful, onProgress } = options;
   const bank = "itau";
+  const progress = onProgress || (() => {});
 
   if (!rut || !password) {
     return { success: false, bank, movements: [], error: "Debes proveer RUT y clave." };
@@ -452,20 +453,26 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     });
 
     // Login
+    progress("Abriendo sitio del banco...");
     const loginResult = await login(page, rut, password, debugLog, doSave);
     if (!loginResult.success) {
       return { success: false, bank, movements: [], error: loginResult.error, screenshot: loginResult.screenshot, debug: debugLog.join("\n") };
     }
 
+    progress("Sesión iniciada correctamente");
     await closePopups(page);
 
     // Extract balance
+    progress("Extrayendo saldo...");
     const balance = await extractBalance(page, debugLog);
 
     // Extract account movements
+    progress("Extrayendo movimientos de cuenta...");
     const accountMovements = await extractMovements(page, debugLog);
+    progress(`Cuenta: ${accountMovements.length} movimientos`);
 
     // Extract credit card data
+    progress("Extrayendo datos de tarjeta de crédito...");
     const tcResult = await extractCreditCardData(page, debugLog);
 
     // Combine and deduplicate
@@ -473,6 +480,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     const deduplicated = deduplicateMovements(allMovements);
 
     debugLog.push(`9. Total: ${deduplicated.length} unique movements`);
+    progress(`Listo — ${deduplicated.length} movimientos totales`);
     await doSave(page, "05-final");
     const screenshot = doScreenshots ? (await page.screenshot({ encoding: "base64" })) as string : undefined;
 

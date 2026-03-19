@@ -356,8 +356,9 @@ async function selectPeriod(page: Page, periodIndex: number, debugLog: string[])
 // ─── Main scraper ───────────────────────────────────────────────
 
 async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
-  const { rut, password, chromePath, saveScreenshots: doScreenshots, headful } = options;
+  const { rut, password, chromePath, saveScreenshots: doScreenshots, headful, onProgress } = options;
   const bank = "bice";
+  const progress = onProgress || (() => {});
 
   if (!rut || !password) {
     return { success: false, bank, movements: [], error: "Debes proveer RUT y clave." };
@@ -391,11 +392,13 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     });
 
     // Login
+    progress("Abriendo sitio del banco...");
     const loginResult = await login(page, rut, password, debugLog, doSave);
     if (!loginResult.success) {
       return { success: false, bank, movements: [], error: loginResult.error, screenshot: loginResult.screenshot, debug: debugLog.join("\n") };
     }
 
+    progress("Sesión iniciada correctamente");
     const activePage = loginResult.activePage || page;
 
     // Dismiss popups
@@ -407,6 +410,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     debugLog.push(`  Balance: ${balance !== undefined ? `$${balance.toLocaleString("es-CL")}` : "not found"}`);
 
     // Navigate to movements
+    progress("Navegando a movimientos...");
     const navOk = await navigateToMovements(activePage, debugLog, doSave);
     if (!navOk) {
       const screenshot = await activePage.screenshot({ encoding: "base64" });
@@ -414,8 +418,10 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     }
 
     // Extract current month movements (with pagination)
+    progress("Extrayendo movimientos del mes actual...");
     const movements = await paginateAndExtract(activePage, extractCurrentMonthMovements);
     debugLog.push(`10. Extracted ${movements.length} current month movements`);
+    progress(`Mes actual: ${movements.length} movimientos`);
 
     // Historical periods
     const monthsStr = process.env.BICE_MONTHS || "0";
@@ -423,6 +429,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     if (months > 0) {
       debugLog.push(`11. Fetching ${months} historical period(s)...`);
+      progress(`Extrayendo ${months} periodo(s) histórico(s)...`);
       const histNavOk = await navigateToHistorical(activePage, debugLog, doSave);
 
       if (!histNavOk) {
@@ -448,6 +455,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     const deduplicated = deduplicateMovements(movements);
 
     debugLog.push(`  Total: ${deduplicated.length} unique movements`);
+    progress(`Listo — ${deduplicated.length} movimientos totales`);
 
     await doSave(activePage, "07-final");
     const screenshot = doScreenshots ? ((await activePage.screenshot({ encoding: "base64", fullPage: true })) as string) : undefined;

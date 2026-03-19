@@ -646,8 +646,9 @@ async function paginateTcAndExtract(page: Page, tab: TcTab, debugLog: string[]):
 // ─── Main scraper ──────────────────────────────────────────────
 
 async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
-  const { rut, password, chromePath, saveScreenshots: doScreenshots, headful } = options;
+  const { rut, password, chromePath, saveScreenshots: doScreenshots, headful, onProgress } = options;
   const bank = "edwards";
+  const progress = onProgress || (() => {});
 
   if (!rut || !password) {
     return { success: false, bank, movements: [], error: "Debes proveer RUT y clave." };
@@ -682,6 +683,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     // Step 1: Navigate to login page (Edwards uses direct login URL)
     debugLog.push("1. Navigating to Banco Edwards login...");
+    progress("Abriendo sitio del banco...");
     await page.goto(BANK_URL, { waitUntil: "load", timeout: 30000 });
     await delay(5000); // Allow SPA to render
 
@@ -715,6 +717,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     }
 
     debugLog.push("2. Filling RUT...");
+    progress("Ingresando RUT...");
     const rutFilled = await fillRut(loginCtx as unknown as Page, rut);
     if (!rutFilled) {
       const screenshot = await page.screenshot({ encoding: "base64" });
@@ -738,6 +741,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     // Step 4: Submit login
     debugLog.push("4. Submitting login...");
+    progress("Iniciando sesión...");
     await clickSubmitButton(page);
     await delay(8000);
     await doSave(page, "02-after-login");
@@ -760,12 +764,14 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     }
 
     debugLog.push(`5. Login OK!`);
+    progress("Sesión iniciada correctamente");
 
     // Step 5: Close popups
     await closePopups(page);
 
     // Step 6: Navigate to Cartola/Movimientos
     debugLog.push("6. Looking for Cartola/Movimientos...");
+    progress("Buscando cartola de cuenta...");
     let navigated = await clickNavTarget(page, debugLog);
 
     if (!navigated) {
@@ -824,6 +830,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     // Step 7b: Credit card movements
     debugLog.push("7b. Navigating to Tarjetas de Crédito...");
+    progress("Navegando a tarjeta de crédito...");
     const baseUrl = page.url().split("#")[0];
     await page.goto(`${baseUrl}#/home`, { waitUntil: "load", timeout: 15000 });
     await delay(3000);
@@ -847,6 +854,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     }
 
     debugLog.push(`8. Extracted ${movements.length} movements`);
+    progress(`Listo — ${movements.length} movimientos totales`);
 
     // Step 9: Get balance
     let balance: number | undefined;

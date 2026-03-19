@@ -213,8 +213,9 @@ async function extractMovements(page: Page, debugLog: string[]): Promise<BankMov
 // ─── Main scraper ───────────────────────────────────────────────
 
 async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
-  const { rut, password, chromePath, saveScreenshots: doScreenshots, headful } = options;
+  const { rut, password, chromePath, saveScreenshots: doScreenshots, headful, onProgress } = options;
   const bank = "bestado";
+  const progress = onProgress || (() => {});
 
   if (!rut || !password) {
     return { success: false, bank, movements: [], error: "Debes proveer RUT y clave." };
@@ -262,6 +263,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     // Step 1: Navigate to login
     debugLog.push("1. Navigating to BancoEstado login...");
+    progress("Abriendo sitio del banco...");
     await page.goto(LOGIN_URL, { waitUntil: "networkidle2", timeout: 30000 });
     await delay(3000);
     await closePopups(page);
@@ -294,6 +296,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     // Step 3: Fill RUT
     debugLog.push("3. Filling RUT...");
+    progress("Ingresando RUT...");
     const rutFilled = await fillRut(page, rut, debugLog);
     if (!rutFilled) {
       const screenshot = await page.screenshot({ encoding: "base64" });
@@ -302,6 +305,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     // Step 4: Fill password
     debugLog.push("4. Filling password...");
+    progress("Ingresando clave...");
     const passFilled = await fillPassword(page, password, debugLog);
     if (!passFilled) {
       const screenshot = await page.screenshot({ encoding: "base64" });
@@ -311,6 +315,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     // Step 5: Submit login
     debugLog.push("5. Submitting login...");
+    progress("Iniciando sesión...");
     const submitBtn = await page.$("#btnLogin");
     if (submitBtn) {
       await submitBtn.click();
@@ -365,13 +370,17 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     const postLoginUrl = new URL(page.url());
     debugLog.push(`  Login OK! URL: ${postLoginUrl.origin}${postLoginUrl.pathname}`);
 
+    progress("Sesión iniciada correctamente");
+
     // Step 6: Extract balance from dashboard (CuentaRUT)
     debugLog.push("6. Extracting CuentaRUT balance from dashboard...");
+    progress("Extrayendo saldo CuentaRUT...");
     const balance = await extractBalanceFromDashboard(page, debugLog);
     await doSave(page, "05-dashboard");
 
     // Step 7: Navigate to CuentaRUT movements
     debugLog.push("7. Navigating to CuentaRUT movements...");
+    progress("Navegando a movimientos CuentaRUT...");
 
     // First try: click "ir a movimientos" link on dashboard
     let navigated = await page.evaluate(() => {
@@ -444,6 +453,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     // Step 8: Extract movements
     debugLog.push("8. Extracting movements...");
+    progress("Extrayendo movimientos...");
     let movements = await extractMovements(page, debugLog);
 
     // Try pagination
@@ -472,6 +482,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     const deduplicated = deduplicateMovements(movements);
     debugLog.push(`  Total: ${deduplicated.length} unique movements`);
+    progress(`Listo — ${deduplicated.length} movimientos totales`);
 
     await doSave(page, "07-final");
     const screenshot = doScreenshots ? await page.screenshot({ encoding: "base64" }) as string : undefined;

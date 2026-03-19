@@ -569,8 +569,9 @@ async function extractCreditCardInfo(
 // ─── Main scraper ───────────────────────────────────────────────
 
 async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
-  const { rut, password, chromePath, saveScreenshots: doScreenshots, headful } = options;
+  const { rut, password, chromePath, saveScreenshots: doScreenshots, headful, onProgress } = options;
   const bank = "bci";
+  const progress = onProgress || (() => {});
 
   if (!rut || !password) {
     return { success: false, bank, movements: [], error: "Debes proveer RUT y clave." };
@@ -604,20 +605,24 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     await page.evaluateOnNewDocument(() => { Object.defineProperty(navigator, "webdriver", { get: () => false }); });
 
     // Login
+    progress("Abriendo sitio del banco...");
     const loginResult = await login(page, rut, password, debugLog, doSave);
     if (!loginResult.success) {
       return { success: false, bank, movements: [], error: loginResult.error, screenshot: loginResult.screenshot, debug: debugLog.join("\n") };
     }
 
+    progress("Sesión iniciada correctamente");
     await closePopups(page);
     await delay(2000);
 
     // Fetch account movements and balance from iframe
+    progress("Extrayendo movimientos de cuenta...");
     const acctResult = await fetchAccountMovements(page, debugLog, doSave);
     const accountMovements = acctResult.movements;
     let balance = acctResult.balance;
 
     // Credit card data
+    progress("Extrayendo datos de tarjeta de crédito...");
     const tcResult = await extractCreditCardInfo(page, debugLog, doSave);
     debugLog.push(`  TC movements: ${tcResult.movements.length}, cards: ${tcResult.creditCards.length}`);
 
@@ -627,6 +632,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     const deduplicated = deduplicateMovements(allMovements);
 
     debugLog.push(`  Total: ${deduplicated.length} unique movements`);
+    progress(`Listo — ${deduplicated.length} movimientos totales`);
     await doSave(page, "06-final");
 
     const screenshot = doScreenshots ? ((await page.screenshot({ encoding: "base64" })) as string) : undefined;

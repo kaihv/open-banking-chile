@@ -781,8 +781,9 @@ async function navigateToMovements(page: Page, debugLog: string[]): Promise<void
 }
 
 async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
-  const { rut, password, chromePath, saveScreenshots: doScreenshots, headful } = options;
+  const { rut, password, chromePath, saveScreenshots: doScreenshots, headful, onProgress } = options;
   const bank = "santander";
+  const progress = onProgress || (() => {});
 
   if (!rut || !password) {
     return {
@@ -835,6 +836,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     });
 
     debugLog.push("1. Navigating to Santander...");
+    progress("Abriendo sitio del banco...");
     await page.goto(BANK_URL, { waitUntil: "networkidle2", timeout: 30000 });
     await delay(2000);
 
@@ -897,6 +899,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     }
 
     debugLog.push("3. Filling RUT...");
+    progress("Ingresando RUT...");
     const rutFilled = await fillRut(loginContext, rut);
     if (!rutFilled) {
       const screenshot = await page.screenshot({ encoding: "base64" });
@@ -929,6 +932,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     await delay(700);
 
     debugLog.push("5. Submitting login...");
+    progress("Iniciando sesión...");
     await submitLogin(loginContext, page);
 
     await delay(7000);
@@ -1016,10 +1020,12 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     }
 
     debugLog.push(`6. Login OK.`);
+    progress("Sesión iniciada correctamente");
 
     await closePopups(page);
 
     debugLog.push("7. Navigating to movements...");
+    progress("Extrayendo movimientos de cuenta...");
     await navigateToMovements(page, debugLog);
     await delay(4000);
     await doSave(page, "04-movements");
@@ -1051,6 +1057,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     movements = deduplicateMovements(movements);
 
     debugLog.push("7b. Navigating to credit card movements...");
+    progress("Extrayendo movimientos de tarjeta de crédito...");
     const tcReady = await navigateToCreditCardSection(page, debugLog);
     if (!tcReady) {
       debugLog.push("  Could not open credit card section.");
@@ -1089,6 +1096,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     }
 
     debugLog.push(`8. Extracted ${movements.length} movement(s)`);
+    progress(`Listo — ${movements.length} movimientos totales`);
     if (balance !== undefined) {
       debugLog.push(`9. Balance found: $${balance.toLocaleString("es-CL")}`);
     } else {

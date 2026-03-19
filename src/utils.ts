@@ -186,6 +186,59 @@ export function deduplicateMovements(movements: BankMovement[]): BankMovement[] 
   });
 }
 
+// ─── Spinner ──────────────────────────────────────────────────
+
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/** Spinner de terminal que muestra el paso actual del scraper */
+export class Spinner {
+  private frameIdx = 0;
+  private interval: ReturnType<typeof setInterval> | null = null;
+  private currentStep = "";
+  private stream: NodeJS.WriteStream;
+
+  constructor(stream: NodeJS.WriteStream = process.stderr) {
+    this.stream = stream;
+  }
+
+  /** Inicia el spinner con un mensaje inicial */
+  start(message: string): void {
+    this.currentStep = message;
+    this.interval = setInterval(() => {
+      const frame = SPINNER_FRAMES[this.frameIdx % SPINNER_FRAMES.length];
+      this.stream.write(`\r${frame} ${this.currentStep}\x1b[K`);
+      this.frameIdx++;
+    }, 80);
+  }
+
+  /** Actualiza el mensaje del spinner */
+  update(message: string): void {
+    this.currentStep = message;
+  }
+
+  /** Detiene el spinner y muestra un mensaje final */
+  stop(finalMessage?: string): void {
+    if (this.interval) {
+      clearInterval(this.interval);
+      this.interval = null;
+    }
+    if (finalMessage) {
+      this.stream.write(`\r✔ ${finalMessage}\x1b[K\n`);
+    } else {
+      this.stream.write(`\r\x1b[K`);
+    }
+  }
+
+  /** Detiene el spinner con un mensaje de error */
+  fail(message: string): void {
+    if (this.interval) {
+      clearInterval(this.interval);
+      this.interval = null;
+    }
+    this.stream.write(`\r✖ ${message}\x1b[K\n`);
+  }
+}
+
 // ─── Session ──────────────────────────────────────────────────
 
 /** Cierra sesión buscando botones de logout comunes */

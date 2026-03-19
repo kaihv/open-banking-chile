@@ -792,8 +792,9 @@ async function fetchCreditCardData(
 // ─── Main scraper ────────────────────────────────────────────────
 
 async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
-  const { rut, password, chromePath, saveScreenshots: doScreenshots, headful } = options;
+  const { rut, password, chromePath, saveScreenshots: doScreenshots, headful, onProgress } = options;
   const bank = "bchile";
+  const progress = onProgress || (() => {});
 
   if (!rut || !password) {
     return { success: false, bank, movements: [], error: "Debes proveer RUT y clave." };
@@ -827,10 +828,13 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     });
 
     // Login (DOM-based — required for auth + 2FA)
+    progress("Abriendo sitio del banco...");
     const loginResult = await login(page, rut, password, debugLog, doSave);
     if (!loginResult.success) {
       return { success: false, bank, movements: [], error: loginResult.error, screenshot: loginResult.screenshot, debug: debugLog.join("\n") };
     }
+
+    progress("Sesión iniciada correctamente");
 
     // Close modal overlay (Banco de Chile shows a promotional modal after login)
     try {
@@ -856,6 +860,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     // 1. Get product list and client data (needed by multiple endpoints)
     debugLog.push("5. Fetching products and client data via API...");
+    progress("Obteniendo productos y datos del cliente...");
     let products: ApiProductsResponse;
     let clientData: ApiClientData;
     try {
@@ -893,6 +898,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
       || `${clientData.datosCliente.nombres} ${clientData.datosCliente.apellidoPaterno}`.trim();
 
     debugLog.push("6. Fetching account movements via API...");
+    progress("Extrayendo movimientos de cuenta...");
     const acctResult = await fetchAccountMovements(page, products.productos, fullName, products.rut, debugLog);
     const accountMovements = acctResult.movements;
     if (balance === undefined && acctResult.balance !== undefined) balance = acctResult.balance;
@@ -900,6 +906,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     // 4. Fetch credit card data via API
     debugLog.push("7. Fetching credit card data via API...");
+    progress("Extrayendo datos de tarjeta de crédito...");
     const tcResult = await fetchCreditCardData(page, fullName, debugLog);
     debugLog.push(`  Total TC movements: ${tcResult.movements.length}, cards: ${tcResult.creditCards.length}`);
 
@@ -908,6 +915,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     const deduplicated = deduplicateMovements(allMovements);
 
     debugLog.push(`8. Total: ${deduplicated.length} unique movements`);
+    progress(`Listo — ${deduplicated.length} movimientos totales`);
 
     await doSave(page, "06-final");
     const screenshot = doScreenshots ? await page.screenshot({ encoding: "base64" }) as string : undefined;

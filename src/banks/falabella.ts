@@ -529,8 +529,9 @@ async function paginateCmrMovements(page: Page, debugLog: string[]): Promise<Ban
 // ─── Main scraper ───────────────────────────────────────────────
 
 async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
-  const { rut, password, chromePath, saveScreenshots: doScreenshots, headful, owner = "B" } = options;
+  const { rut, password, chromePath, saveScreenshots: doScreenshots, headful, owner = "B", onProgress } = options;
   const bank = "falabella";
+  const progress = onProgress || (() => {});
 
   if (!rut || !password) {
     return { success: false, bank, movements: [], error: "Debes proveer RUT y clave." };
@@ -564,6 +565,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     // Step 1: Navigate
     debugLog.push("1. Navigating to bank homepage...");
+    progress("Abriendo sitio del banco...");
     await page.goto(BANK_URL, { waitUntil: "networkidle2", timeout: 30000 });
     await delay(2000);
 
@@ -584,6 +586,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     // Step 2: Click "Mi cuenta"
     debugLog.push("2. Clicking 'Mi cuenta'...");
+    progress("Ingresando a Mi cuenta...");
     const miCuentaClicked = await page.evaluate(() => {
       const links = Array.from(document.querySelectorAll("a, button"));
       for (const link of links) {
@@ -603,6 +606,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     // Step 3: Fill RUT
     debugLog.push("3. Filling RUT...");
+    progress("Ingresando RUT...");
     const rutFilled = await fillRut(page, rut);
     if (!rutFilled) {
       const screenshot = await page.screenshot({ encoding: "base64" });
@@ -612,6 +616,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     // Step 4: Fill password
     debugLog.push("4. Filling password...");
+    progress("Ingresando clave...");
     let passwordFilled = await fillPassword(page, password);
     if (!passwordFilled) {
       await page.keyboard.press("Enter");
@@ -626,6 +631,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     // Step 5: Submit login
     debugLog.push("5. Submitting login...");
+    progress("Iniciando sesión...");
     await clickSubmitButton(page);
     await delay(8000);
     await doSave(page, "03-after-login");
@@ -652,6 +658,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     }
 
     debugLog.push(`6. Login OK!`);
+    progress("Sesión iniciada correctamente");
     await closePopups(page);
     await doSave(page, "04-post-login");
 
@@ -661,6 +668,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     // ── Phase 1: Account movements ──────────────────────────────
 
     debugLog.push("7. [Cuenta] Looking for Cartola/Movimientos...");
+    progress("Buscando cartola de cuenta...");
     let navigated = await clickNavTarget(page, debugLog);
 
     if (!navigated) {
@@ -694,8 +702,10 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     await doSave(page, "05-account-movements");
     await tryExpandDateRange(page, debugLog);
 
+    progress("Extrayendo movimientos de cuenta...");
     const accountMovements = await paginateAccountMovements(page, debugLog);
     debugLog.push(`8. [Cuenta] Extracted ${accountMovements.length} movements`);
+    progress(`Cuenta: ${accountMovements.length} movimientos encontrados`);
 
     let balance: number | undefined;
     if (accountMovements.length > 0 && accountMovements[0].balance > 0) {
@@ -712,15 +722,18 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     // ── Phase 2: CMR credit card movements ──────────────────────
 
     debugLog.push("9. [CMR] Navigating back to authenticated dashboard...");
+    progress("Navegando a tarjeta de crédito...");
     await page.goto(dashboardUrl, { waitUntil: "networkidle2", timeout: 30000 });
     await delay(2000);
     await closePopups(page);
 
     debugLog.push("10. [CMR] Extracting credit card cupos...");
+    progress("Extrayendo cupos de tarjeta...");
     const cmrBalance = await extractCupos(page, debugLog);
     const creditCards: CreditCardBalance[] = cmrBalance ? [cmrBalance] : [];
 
     debugLog.push("11. [CMR] Looking for CMR card product...");
+    progress("Buscando tarjeta CMR...");
     const cardClicked = await page.evaluate(() => {
       const cardSelectors = [
         "#cardDetail0",
@@ -769,6 +782,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     }
 
     debugLog.push("12. [CMR] Extracting TC por facturar...");
+    progress("Extrayendo movimientos TC por facturar...");
     const recentMovements = await paginateCmrMovements(page, debugLog);
     debugLog.push(`  TC por facturar: ${recentMovements.length}`);
 
@@ -778,6 +792,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
     }));
 
     debugLog.push("13. [CMR] Extracting TC facturados...");
+    progress("Extrayendo movimientos TC facturados...");
     const facturadosClicked = await clickCmrTab(page, "movimientos facturados", debugLog);
 
     let taggedFacturados: BankMovement[] = [];
@@ -806,6 +821,7 @@ async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
 
     const allMovements = [...accountMovements, ...tcMovements];
     debugLog.push(`14. Total movements: ${allMovements.length} (account: ${accountMovements.length}, TC: ${tcMovements.length})`);
+    progress(`Listo — ${allMovements.length} movimientos totales`);
 
     await doSave(page, "08-final");
     const screenshot = doScreenshots ? ((await page.screenshot({ encoding: "base64", fullPage: true })) as string) : undefined;

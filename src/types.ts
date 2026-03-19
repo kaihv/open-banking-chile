@@ -94,6 +94,8 @@ export interface ScraperOptions extends BankCredentials {
   headful?: boolean;
   /** Filtro Titular/Adicional para TC (ej: "T" = titular, "A" = adicional, "B" = todos). Default: "B" */
   owner?: "T" | "A" | "B";
+  /** Callback de progreso para mostrar estado al usuario */
+  onProgress?: (step: string) => void;
 }
 
 /** Interfaz que debe implementar cada banco */
