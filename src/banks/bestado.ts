@@ -1,21 +1,25 @@
-import puppeteer, { type Page } from "puppeteer-core";
+import type { Page } from "puppeteer-core";
 import type { BankMovement, BankScraper, ScrapeResult, ScraperOptions } from "../types.js";
 import { MOVEMENT_SOURCE } from "../types.js";
-import { closePopups, delay, findChrome, saveScreenshot, normalizeDate, parseChileanAmount, deduplicateMovements, logout } from "../utils.js";
+import { closePopups, delay, parseChileanAmount, normalizeDate, deduplicateMovements } from "../utils.js";
+import { runScraper } from "../infrastructure/scraper-runner.js";
+import type { BrowserSession } from "../infrastructure/browser.js";
+import { clickByText } from "../actions/navigation.js";
+
+// ─── Bestado-specific constants ──────────────────────────────────
 
 const LOGIN_URL = "https://www.bancoestado.cl/content/bancoestado-public/cl/es/home/home.html#/login";
 
-// ─── Login helpers ──────────────────────────────────────────────
+// ─── Bestado-specific helpers ────────────────────────────────────
 
-async function fillRut(page: Page, rut: string, debugLog: string[]): Promise<boolean> {
+async function fillRut(page: Page, rut: string): Promise<boolean> {
   const rutInput = await page.$("#rut");
   if (!rutInput) return false;
 
-  // Click to focus — Angular removes readonly on focus
   await rutInput.click();
   await delay(500);
 
-  // If still readonly, remove it and re-focus
+  // Angular removes readonly on focus — force-remove if still present
   const isReadonly = await page.evaluate(() => {
     const input = document.querySelector("#rut") as HTMLInputElement;
     if (input?.hasAttribute("readonly")) {
@@ -27,7 +31,6 @@ async function fillRut(page: Page, rut: string, debugLog: string[]): Promise<boo
   });
   if (isReadonly) await delay(300);
 
-  // BancoEstado expects raw RUT without dots/dash (not formatted like "12.345.678-9")
   await rutInput.click({ clickCount: 3 });
   const cleanRut = rut.replace(/[.\-]/g, "");
   await rutInput.type(cleanRut, { delay: 80 });
@@ -41,11 +44,10 @@ async function fillRut(page: Page, rut: string, debugLog: string[]): Promise<boo
     }
   });
 
-  debugLog.push("  RUT filled");
   return true;
 }
 
-async function fillPassword(page: Page, password: string, debugLog: string[]): Promise<boolean> {
+async function fillPassword(page: Page, password: string): Promise<boolean> {
   const passInput = await page.$("#pass");
   if (!passInput) return false;
 
@@ -60,15 +62,11 @@ async function fillPassword(page: Page, password: string, debugLog: string[]): P
     }
   });
 
-  debugLog.push("  Password filled");
   return true;
 }
 
-// ─── Dashboard extraction ───────────────────────────────────────
-
 async function extractBalanceFromDashboard(page: Page, debugLog: string[]): Promise<number | undefined> {
   const balance = await page.evaluate(() => {
-    // Look for CuentaRUT product card on dashboard — it shows the balance as a large number
     const productCards = document.querySelectorAll('[class*="product"], [class*="card"], [class*="cuenta"]');
     for (const card of productCards) {
       const text = (card as HTMLElement).innerText || "";
@@ -77,8 +75,6 @@ async function extractBalanceFromDashboard(page: Page, debugLog: string[]): Prom
         if (amountMatch) return amountMatch[1];
       }
     }
-
-    // Fallback: look for saldo pattern anywhere
     const bodyText = document.body?.innerText || "";
     const patterns = [
       /cuentarut[^$]*\$\s*([\d.,]+)/i,
@@ -97,14 +93,10 @@ async function extractBalanceFromDashboard(page: Page, debugLog: string[]): Prom
     debugLog.push(`  CuentaRUT balance: $${parsed.toLocaleString("es-CL")}`);
     return parsed;
   }
-
-  debugLog.push("  CuentaRUT balance not found on dashboard");
   return undefined;
 }
 
-// ─── Movement extraction ────────────────────────────────────────
-
-async function extractMovements(page: Page, debugLog: string[]): Promise<BankMovement[]> {
+async function extractMovements(page: Page): Promise<BankMovement[]> {
   const raw = await page.evaluate(() => {
     const results: Array<{ date: string; description: string; amount: string; balance: string }> = [];
 
@@ -114,7 +106,6 @@ async function extractMovements(page: Page, debugLog: string[]): Promise<BankMov
       const rows = Array.from(table.querySelectorAll("tr"));
       if (rows.length < 2) continue;
 
-      // Find header indices
       let dateIdx = -1, descIdx = -1, amountIdx = -1, saldoIdx = -1;
       let cargoIdx = -1, abonoIdx = -1;
       for (const row of rows) {
@@ -124,10 +115,8 @@ async function extractMovements(page: Page, debugLog: string[]): Promise<BankMov
           dateIdx = headers.findIndex(h => h.includes("fecha"));
           descIdx = headers.findIndex(h => h.includes("descripci") || h.includes("detalle") || h.includes("glosa"));
           saldoIdx = headers.findIndex(h => h.includes("saldo"));
-          // Combined "Abonos/Cargos" column — sign embedded in value (+$xxx / -$xxx)
           amountIdx = headers.findIndex(h => (h.includes("abono") && h.includes("cargo")) || h.includes("monto") || h.includes("importe"));
           if (amountIdx < 0) {
-            // Separate Cargo/Abono columns
             cargoIdx = headers.findIndex(h => h === "cargo" || h === "cargos" || h.includes("débito"));
             abonoIdx = headers.findIndex(h => h === "abono" || h === "abonos" || h.includes("crédito") || h.includes("depósito"));
           }
@@ -146,17 +135,12 @@ async function extractMovements(page: Page, debugLog: string[]): Promise<BankMov
 
         let amount = "";
         if (amountIdx >= 0) {
-          // Single column with sign embedded (e.g. "+$7", "-$436")
           amount = texts[amountIdx] || "";
         } else if (cargoIdx >= 0 || abonoIdx >= 0) {
-          // Separate cargo/abono columns
           const cargo = cargoIdx >= 0 ? texts[cargoIdx] || "" : "";
           const abono = abonoIdx >= 0 ? texts[abonoIdx] || "" : "";
-          if (cargo && cargo !== "$0" && cargo !== "0") {
-            amount = `-${cargo}`;
-          } else if (abono) {
-            amount = abono;
-          }
+          if (cargo && cargo !== "$0" && cargo !== "0") amount = `-${cargo}`;
+          else if (abono) amount = abono;
         }
 
         results.push({
@@ -168,7 +152,7 @@ async function extractMovements(page: Page, debugLog: string[]): Promise<BankMov
       }
     }
 
-    // Strategy 2: Dashboard "Últimos movimientos" cards
+    // Strategy 2: Dashboard movement cards
     if (results.length === 0) {
       const movRows = document.querySelectorAll('[class*="movimiento"], [class*="movement"], [class*="transaction"]');
       for (const el of movRows) {
@@ -191,14 +175,10 @@ async function extractMovements(page: Page, debugLog: string[]): Promise<BankMov
     return results;
   });
 
-  debugLog.push(`  Raw movements extracted: ${raw.length}`);
-
   return raw
     .map(r => {
-      // parseChileanAmount handles sign: "+$7" → 7, "- $436" → -436
       const amount = parseChileanAmount(r.amount);
       if (amount === 0) return null;
-
       return {
         date: normalizeDate(r.date),
         description: r.description,
@@ -210,313 +190,186 @@ async function extractMovements(page: Page, debugLog: string[]): Promise<BankMov
     .filter(Boolean) as BankMovement[];
 }
 
-// ─── Main scraper ───────────────────────────────────────────────
+// ─── Main scrape function ────────────────────────────────────────
 
-async function scrape(options: ScraperOptions): Promise<ScrapeResult> {
-  const { rut, password, chromePath, saveScreenshots: doScreenshots, headful, onProgress } = options;
+async function scrapeBestado(
+  session: BrowserSession,
+  options: ScraperOptions,
+): Promise<ScrapeResult> {
+  const { rut, password, saveScreenshots: doScreenshots } = options;
+  const { onProgress } = options;
+  const { page, debugLog, screenshot: doSave } = session;
   const bank = "bestado";
   const progress = onProgress || (() => {});
 
-  if (!rut || !password) {
-    return { success: false, bank, movements: [], error: "Debes proveer RUT y clave." };
-  }
-
-  const executablePath = findChrome(chromePath);
-  if (!executablePath) {
-    return {
-      success: false, bank, movements: [],
-      error: "No se encontró Chrome/Chromium. Instala Google Chrome o usa CHROME_PATH.",
-    };
-  }
-
-  let browser;
-  const debugLog: string[] = [];
-  const doSave = async (page: Page, name: string) => saveScreenshot(page, name, !!doScreenshots, debugLog);
-
-  // BancoEstado blocks headless browsers (TLS fingerprinting) — requires visible Chrome
+  // BancoEstado blocks headless browsers — check display on Linux
   if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
-    return {
-      success: false, bank, movements: [],
-      error: "BancoEstado requiere modo headful (Chrome visible). No se detectó display ($DISPLAY/$WAYLAND_DISPLAY). Usa un entorno con GUI o configura Xvfb.",
-      debug: debugLog.join("\n"),
-    };
+    return { success: false, bank, movements: [], error: "BancoEstado requiere modo headful. No se detectó display ($DISPLAY/$WAYLAND_DISPLAY).", debug: debugLog.join("\n") };
   }
 
+  // 1. Navigate
+  debugLog.push("1. Navigating to BancoEstado login...");
+  progress("Abriendo sitio del banco...");
+  await page.goto(LOGIN_URL, { waitUntil: "networkidle2", timeout: 30000 });
+  await delay(3000);
+  await closePopups(page);
+  await doSave(page, "01-homepage");
+
+  // 2. Wait for login form
+  debugLog.push("2. Waiting for login offcanvas...");
   try {
-    if (headful === false) {
-      debugLog.push("  WARNING: BancoEstado bloquea headless. Se abrirá Chrome visible de todas formas.");
-    }
-    browser = await puppeteer.launch({
-      headless: false,
-      executablePath,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-blink-features=AutomationControlled", "--window-size=1280,900"],
-    });
-
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 900 });
-    await page.setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36");
-
-    // Hide webdriver detection
-    await page.evaluateOnNewDocument(() => {
-      Object.defineProperty(navigator, "webdriver", { get: () => false });
-    });
-
-    // Step 1: Navigate to login
-    debugLog.push("1. Navigating to BancoEstado login...");
-    progress("Abriendo sitio del banco...");
-    await page.goto(LOGIN_URL, { waitUntil: "networkidle2", timeout: 30000 });
+    await page.waitForSelector(".msd-custom-sidenav__container #rut", { visible: true, timeout: 15000 });
+  } catch {
+    await clickByText(page, ["ingresar", "banca en línea", "login"]);
     await delay(3000);
-    await closePopups(page);
-    await doSave(page, "01-homepage");
+    await page.waitForSelector("#rut", { visible: true, timeout: 10000 });
+  }
+  await doSave(page, "02-login-form");
 
-    // Step 2: Wait for offcanvas login form
-    debugLog.push("2. Waiting for login offcanvas...");
-    try {
-      await page.waitForSelector(".msd-custom-sidenav__container #rut", { visible: true, timeout: 15000 });
-    } catch {
-      const loginBtn = await page.evaluate(() => {
-        const btns = document.querySelectorAll("a, button");
-        for (const btn of btns) {
-          const text = (btn as HTMLElement).innerText?.trim().toLowerCase();
-          if (text.includes("ingresar") || text.includes("banca en línea") || text.includes("login")) {
-            (btn as HTMLElement).click();
-            return true;
-          }
-        }
-        return false;
-      });
-      if (loginBtn) {
-        debugLog.push("  Clicked login button to open offcanvas");
-        await delay(3000);
-      }
-      await page.waitForSelector("#rut", { visible: true, timeout: 10000 });
-    }
-    debugLog.push("  Login form visible");
-    await doSave(page, "02-login-form");
+  // 3-4. Fill credentials
+  debugLog.push("3. Filling RUT...");
+  progress("Ingresando RUT...");
+  if (!(await fillRut(page, rut))) {
+    const ss = await page.screenshot({ encoding: "base64" });
+    return { success: false, bank, movements: [], error: "No se pudo llenar el RUT", screenshot: ss as string, debug: debugLog.join("\n") };
+  }
 
-    // Step 3: Fill RUT
-    debugLog.push("3. Filling RUT...");
-    progress("Ingresando RUT...");
-    const rutFilled = await fillRut(page, rut, debugLog);
-    if (!rutFilled) {
-      const screenshot = await page.screenshot({ encoding: "base64" });
-      return { success: false, bank, movements: [], error: "No se pudo llenar el RUT", screenshot: screenshot as string, debug: debugLog.join("\n") };
-    }
+  debugLog.push("4. Filling password...");
+  progress("Ingresando clave...");
+  if (!(await fillPassword(page, password))) {
+    const ss = await page.screenshot({ encoding: "base64" });
+    return { success: false, bank, movements: [], error: "No se pudo llenar la clave", screenshot: ss as string, debug: debugLog.join("\n") };
+  }
+  await doSave(page, "03-credentials");
 
-    // Step 4: Fill password
-    debugLog.push("4. Filling password...");
-    progress("Ingresando clave...");
-    const passFilled = await fillPassword(page, password, debugLog);
-    if (!passFilled) {
-      const screenshot = await page.screenshot({ encoding: "base64" });
-      return { success: false, bank, movements: [], error: "No se pudo llenar la clave", screenshot: screenshot as string, debug: debugLog.join("\n") };
-    }
-    await doSave(page, "03-credentials");
-
-    // Step 5: Submit login
-    debugLog.push("5. Submitting login...");
-    progress("Iniciando sesión...");
-    const submitBtn = await page.$("#btnLogin");
-    if (submitBtn) {
-      await submitBtn.click();
-    } else {
-      await page.evaluate(() => {
-        const form = document.querySelector("form");
-        if (form) form.dispatchEvent(new Event("submit", { bubbles: true }));
-      });
-    }
-
-    try {
-      await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 });
-    } catch {
-      await delay(5000);
-    }
-    await delay(3000);
-    await closePopups(page);
-    await doSave(page, "04-post-login");
-
-    // Check for login errors
-    const loginError = await page.evaluate(() => {
-      const errorKeywords = ["contraseña", "clave incorrecta", "rut inválido", "credenciales", "bloqueado", "intente nuevamente", "reintente"];
-      const errorEls = document.querySelectorAll('[class*="error"], [class*="alert"], .input-messages');
-      for (const el of errorEls) {
-        const text = (el as HTMLElement).innerText?.trim().toLowerCase();
-        if (text && errorKeywords.some(kw => text.includes(kw))) {
-          return (el as HTMLElement).innerText?.trim();
-        }
-      }
-      return null;
-    });
-
-    if (loginError) {
-      const screenshot = await page.screenshot({ encoding: "base64" });
-      return { success: false, bank, movements: [], error: `Login fallido: ${loginError}`, screenshot: screenshot as string, debug: debugLog.join("\n") };
-    }
-
-    // Close promotional modals ("No por ahora", "Cerrar", etc.)
+  // 5. Submit
+  debugLog.push("5. Submitting login...");
+  progress("Iniciando sesión...");
+  const submitBtn = await page.$("#btnLogin");
+  if (submitBtn) {
+    await submitBtn.click();
+  } else {
     await page.evaluate(() => {
+      const form = document.querySelector("form");
+      if (form) form.dispatchEvent(new Event("submit", { bubbles: true }));
+    });
+  }
+
+  try { await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 }); } catch { await delay(5000); }
+  await delay(3000);
+  await closePopups(page);
+  await doSave(page, "04-post-login");
+
+  // Check login errors
+  const loginError = await page.evaluate(() => {
+    const errorKeywords = ["contraseña", "clave incorrecta", "rut inválido", "credenciales", "bloqueado", "intente nuevamente", "reintente"];
+    const errorEls = document.querySelectorAll('[class*="error"], [class*="alert"], .input-messages');
+    for (const el of errorEls) {
+      const text = (el as HTMLElement).innerText?.trim().toLowerCase();
+      if (text && errorKeywords.some(kw => text.includes(kw))) return (el as HTMLElement).innerText?.trim();
+    }
+    return null;
+  });
+  if (loginError) {
+    const ss = await page.screenshot({ encoding: "base64" });
+    return { success: false, bank, movements: [], error: `Login fallido: ${loginError}`, screenshot: ss as string, debug: debugLog.join("\n") };
+  }
+
+  // Dismiss promo modals
+  await page.evaluate(() => {
+    const btns = document.querySelectorAll("button, a");
+    for (const btn of btns) {
+      const text = (btn as HTMLElement).innerText?.trim().toLowerCase();
+      if (text === "no por ahora" || text === "cerrar" || text === "×") { (btn as HTMLElement).click(); break; }
+    }
+  });
+  await delay(1000);
+
+  const postLoginUrl = new URL(page.url());
+  debugLog.push(`  Login OK! URL: ${postLoginUrl.origin}${postLoginUrl.pathname}`);
+  progress("Sesión iniciada correctamente");
+
+  // 6. Balance
+  debugLog.push("6. Extracting CuentaRUT balance...");
+  progress("Extrayendo saldo CuentaRUT...");
+  const balance = await extractBalanceFromDashboard(page, debugLog);
+  await doSave(page, "05-dashboard");
+
+  // 7. Navigate to movements
+  debugLog.push("7. Navigating to CuentaRUT movements...");
+  progress("Navegando a movimientos CuentaRUT...");
+  let navigated = await page.evaluate(() => {
+    const links = document.querySelectorAll("a, button");
+    for (const el of links) {
+      const text = (el as HTMLElement).innerText?.trim().toLowerCase();
+      if (text === "ir a movimientos" || text === "ver movimientos" || text === "ver más movimientos") {
+        (el as HTMLElement).click();
+        return text;
+      }
+    }
+    return null;
+  });
+
+  if (navigated) {
+    debugLog.push(`  Clicked: "${navigated}"`);
+    await delay(5000);
+    await closePopups(page);
+  } else {
+    // Sidebar fallback
+    const sidebarClicked = await clickByText(page, ["cuentas"]);
+    if (sidebarClicked) {
+      await delay(2000);
+      await clickByText(page, ["cuentarut", "cuenta rut", "movimientos", "cartola"]);
+      await delay(5000);
+      await closePopups(page);
+    }
+  }
+
+  await doSave(page, "06-movements-page");
+
+  // 8. Extract movements with pagination
+  debugLog.push("8. Extracting movements...");
+  progress("Extrayendo movimientos...");
+  let movements = await extractMovements(page);
+
+  for (let i = 0; i < 10; i++) {
+    const hasMore = await page.evaluate(() => {
       const btns = document.querySelectorAll("button, a");
       for (const btn of btns) {
         const text = (btn as HTMLElement).innerText?.trim().toLowerCase();
-        if (text === "no por ahora" || text === "cerrar" || text === "×") {
-          (btn as HTMLElement).click();
-          break;
+        const el = btn as HTMLButtonElement;
+        if ((text === "siguiente" || text === "ver más" || text === "cargar más" || text.includes("›")) && !el.disabled) {
+          el.click();
+          return true;
         }
       }
+      return false;
     });
-    await delay(1000);
-
-    // Log URL without query params (may contain session tokens)
-    const postLoginUrl = new URL(page.url());
-    debugLog.push(`  Login OK! URL: ${postLoginUrl.origin}${postLoginUrl.pathname}`);
-
-    progress("Sesión iniciada correctamente");
-
-    // Step 6: Extract balance from dashboard (CuentaRUT)
-    debugLog.push("6. Extracting CuentaRUT balance from dashboard...");
-    progress("Extrayendo saldo CuentaRUT...");
-    const balance = await extractBalanceFromDashboard(page, debugLog);
-    await doSave(page, "05-dashboard");
-
-    // Step 7: Navigate to CuentaRUT movements
-    debugLog.push("7. Navigating to CuentaRUT movements...");
-    progress("Navegando a movimientos CuentaRUT...");
-
-    // First try: click "ir a movimientos" link on dashboard
-    let navigated = await page.evaluate(() => {
-      const links = document.querySelectorAll("a, button");
-      for (const el of links) {
-        const text = (el as HTMLElement).innerText?.trim().toLowerCase();
-        if (text === "ir a movimientos" || text === "ver movimientos" || text === "ver más movimientos") {
-          (el as HTMLElement).click();
-          return text;
-        }
-      }
-      return null;
-    });
-
-    if (navigated) {
-      debugLog.push(`  Clicked: "${navigated}"`);
-      await delay(5000);
-      await closePopups(page);
-    } else {
-      // Second try: sidebar Cuentas > CuentaRUT / Movimientos
-      debugLog.push("  No 'ir a movimientos' link, trying sidebar...");
-      const sidebarClicked = await page.evaluate(() => {
-        const items = document.querySelectorAll("nav a, a, button");
-        // Look for "Cuentas" in sidebar
-        for (const el of items) {
-          const text = (el as HTMLElement).innerText?.trim().toLowerCase();
-          if (text === "cuentas") {
-            (el as HTMLElement).click();
-            return "cuentas";
-          }
-        }
-        return null;
-      });
-
-      if (sidebarClicked) {
-        debugLog.push(`  Expanded: "${sidebarClicked}"`);
-        await delay(2000);
-
-        // Now click CuentaRUT or Movimientos submenu
-        const subClicked = await page.evaluate(() => {
-          const items = document.querySelectorAll("a, button");
-          // Prefer CuentaRUT specific
-          for (const el of items) {
-            const text = (el as HTMLElement).innerText?.trim().toLowerCase();
-            if (text.includes("cuentarut") || text.includes("cuenta rut")) {
-              (el as HTMLElement).click();
-              return text;
-            }
-          }
-          // Fallback to movimientos
-          for (const el of items) {
-            const text = (el as HTMLElement).innerText?.trim().toLowerCase();
-            if (text === "movimientos" || text === "cartola") {
-              (el as HTMLElement).click();
-              return text;
-            }
-          }
-          return null;
-        });
-
-        if (subClicked) {
-          debugLog.push(`  Clicked: "${subClicked}"`);
-          await delay(5000);
-          await closePopups(page);
-        }
-      }
-    }
-
-    await doSave(page, "06-movements-page");
-
-    // Step 8: Extract movements
-    debugLog.push("8. Extracting movements...");
-    progress("Extrayendo movimientos...");
-    let movements = await extractMovements(page, debugLog);
-
-    // Try pagination
-    for (let i = 0; i < 10; i++) {
-      const hasMore = await page.evaluate(() => {
-        const btns = document.querySelectorAll("button, a");
-        for (const btn of btns) {
-          const text = (btn as HTMLElement).innerText?.trim().toLowerCase();
-          const el = btn as HTMLButtonElement;
-          if ((text === "siguiente" || text === "ver más" || text === "cargar más" || text.includes("›")) && !el.disabled) {
-            el.click();
-            return true;
-          }
-        }
-        return false;
-      });
-
-      if (!hasMore) break;
-      debugLog.push(`  Pagination: page ${i + 2}`);
-      await delay(3000);
-
-      const moreMovements = await extractMovements(page, debugLog);
-      if (moreMovements.length === 0) break;
-      movements.push(...moreMovements);
-    }
-
-    const deduplicated = deduplicateMovements(movements);
-    debugLog.push(`  Total: ${deduplicated.length} unique movements`);
-    progress(`Listo — ${deduplicated.length} movimientos totales`);
-
-    await doSave(page, "07-final");
-    const screenshot = doScreenshots ? await page.screenshot({ encoding: "base64" }) as string : undefined;
-
-    return {
-      success: true,
-      bank,
-      movements: deduplicated,
-      balance,
-      screenshot,
-      debug: debugLog.join("\n"),
-    };
-  } catch (error) {
-    return {
-      success: false, bank, movements: [],
-      error: `Error del scraper: ${error instanceof Error ? error.message : String(error)}`,
-      debug: debugLog.join("\n"),
-    };
-  } finally {
-    if (browser) {
-      try {
-        const pages = await browser.pages();
-        if (pages.length > 0) await logout(pages[pages.length - 1], debugLog);
-      } catch { /* best effort */ }
-      await browser.close().catch(() => {});
-    }
+    if (!hasMore) break;
+    debugLog.push(`  Pagination: page ${i + 2}`);
+    await delay(3000);
+    const more = await extractMovements(page);
+    if (more.length === 0) break;
+    movements.push(...more);
   }
+
+  const deduplicated = deduplicateMovements(movements);
+  debugLog.push(`  Total: ${deduplicated.length} unique movements`);
+  progress(`Listo — ${deduplicated.length} movimientos totales`);
+
+  await doSave(page, "07-final");
+  const ss = doScreenshots ? await page.screenshot({ encoding: "base64" }) as string : undefined;
+
+  return { success: true, bank, movements: deduplicated, balance, screenshot: ss, debug: debugLog.join("\n") };
 }
+
+// ─── Export ──────────────────────────────────────────────────────
 
 const bestado: BankScraper = {
   id: "bestado",
   name: "Banco Estado",
   url: "https://www.bancoestado.cl",
-  scrape,
+  scrape: (options) => runScraper("bestado", options, { forceHeadful: true }, scrapeBestado),
 };
 
 export default bestado;
