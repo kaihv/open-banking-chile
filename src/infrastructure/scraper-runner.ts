@@ -1,5 +1,5 @@
 import type { ScrapeResult, ScraperOptions } from "../types.js";
-import { findChrome, logout } from "../utils.js";
+import { logout } from "../utils.js";
 import { launchBrowser, type BrowserOptions, type BrowserSession } from "./browser.js";
 
 export type ScrapeFn = (
@@ -33,24 +33,11 @@ export async function runScraper(
     };
   }
 
-  const executablePath = findChrome(chromePath);
-  if (!executablePath) {
-    return {
-      success: false,
-      bank: bankId,
-      movements: [],
-      error:
-        "No se encontró Chrome/Chromium. Instala Google Chrome o pasa chromePath en las opciones.\n" +
-        "  Ubuntu/Debian: sudo apt install google-chrome-stable\n" +
-        "  macOS: brew install --cask google-chrome",
-    };
-  }
-
   let session: BrowserSession | undefined;
 
   try {
     session = await launchBrowser(
-      { chromePath: executablePath, headful, ...browserOptions },
+      { chromePath, headful, ...browserOptions },
       !!saveScreenshots,
     );
 

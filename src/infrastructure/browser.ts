@@ -1,8 +1,8 @@
 import puppeteer, { type Browser, type Page } from "puppeteer-core";
-import { saveScreenshot } from "../utils.js";
+import { findChrome, saveScreenshot } from "../utils.js";
 
 export interface BrowserOptions {
-  chromePath: string;
+  chromePath?: string;
   headful?: boolean;
   /** Force headless mode off (e.g., Banco Estado TLS fingerprinting) */
   forceHeadful?: boolean;
@@ -37,8 +37,17 @@ export async function launchBrowser(
   const { chromePath, headful, forceHeadful, extraArgs, viewport } = options;
   const debugLog: string[] = [];
 
+  const executablePath = findChrome(chromePath);
+  if (!executablePath) {
+    throw new Error(
+      "No se encontró Chrome/Chromium. Instala Google Chrome o pasa chromePath en las opciones.\n" +
+        "  Ubuntu/Debian: sudo apt install google-chrome-stable\n" +
+        "  macOS: brew install --cask google-chrome",
+    );
+  }
+
   const browser = await puppeteer.launch({
-    executablePath: chromePath,
+    executablePath,
     headless: forceHeadful ? false : !headful,
     args: [...DEFAULT_ARGS, ...(extraArgs || [])],
   });
