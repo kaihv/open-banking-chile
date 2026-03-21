@@ -184,7 +184,7 @@ async function extractMovementsFromFrame(frame: Frame, debugLog: string[]): Prom
   return all;
 }
 
-async function extractTCMovements(frame: Frame, tab: string, billingType: string, debugLog: string[]): Promise<BankMovement[]> {
+async function extractTCMovements(frame: Frame, tab: string, billingType: string, source: MOVEMENT_SOURCE, debugLog: string[]): Promise<BankMovement[]> {
   await frame.evaluate((tabName: string) => {
     for (const span of document.querySelectorAll("bci-wk-tabs span, .listTab span, .listTab a span")) {
       if (span.textContent?.trim() === tabName) { (span.closest("a") || span as HTMLElement).click(); return; }
@@ -224,7 +224,7 @@ async function extractTCMovements(frame: Frame, tab: string, billingType: string
     const numStr = r.amount.replace(/[^0-9.\-,]/g, "");
     const amount = parseFloat(numStr.replace(/\./g, "").replace(",", ".")) || 0;
     if (amount === 0) continue;
-    movements.push({ date: normalizeDate(r.date), description: r.description, amount: -Math.abs(amount), balance: 0, source: MOVEMENT_SOURCE.credit_card_unbilled });
+    movements.push({ date: normalizeDate(r.date), description: r.description, amount: -Math.abs(amount), balance: 0, source });
   }
   debugLog.push(`    ${tab} / ${billingType}: ${movements.length} movimientos`);
   return movements;
@@ -309,8 +309,8 @@ async function scrapeBci(session: BrowserSession, options: ScraperOptions): Prom
       if (tcFrame) {
         await delay(3000);
         for (const { tab, billingType, source } of TC_COMBINATIONS) {
-          const movements = await extractTCMovements(tcFrame, tab, billingType, debugLog);
-          allMovements.push(...movements.map((m) => ({ ...m, source })));
+          const movements = await extractTCMovements(tcFrame, tab, billingType, source, debugLog);
+          allMovements.push(...movements);
         }
       }
 

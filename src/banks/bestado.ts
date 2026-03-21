@@ -202,11 +202,6 @@ async function scrapeBestado(
   const bank = "bestado";
   const progress = onProgress || (() => {});
 
-  // BancoEstado blocks headless browsers — check display on Linux
-  if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
-    return { success: false, bank, movements: [], error: "BancoEstado requiere modo headful. No se detectó display ($DISPLAY/$WAYLAND_DISPLAY).", debug: debugLog.join("\n") };
-  }
-
   // 1. Navigate
   debugLog.push("1. Navigating to BancoEstado login...");
   progress("Abriendo sitio del banco...");

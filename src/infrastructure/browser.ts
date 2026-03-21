@@ -30,12 +30,42 @@ const DEFAULT_ARGS = [
 const DEFAULT_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
+/**
+ * Launches a browser session for scraping.
+ *
+ * NOTE — Lightpanda (https://lightpanda.io) as a future alternative:
+ * Lightpanda is a headless browser written in Zig that uses ~10-20x less memory
+ * and runs ~10x faster than Chrome. It supports the Chrome DevTools Protocol (CDP),
+ * so swapping would only require changing this function to use puppeteer.connect():
+ *
+ *   const browser = await puppeteer.connect({
+ *     browserWSEndpoint: "ws://127.0.0.1:9222", // Lightpanda serving CDP
+ *   });
+ *
+ * It is NOT integrated yet because (as of early 2026) it is still in beta and has
+ * two blockers for banking scrapers:
+ *   1. iframe support is incomplete (BCI and Santander rely on iframes)
+ *   2. No cookie import/export API (issue #335) — breaks session persistence
+ * Worth revisiting once it hits v1.0.
+ */
 export async function launchBrowser(
   options: BrowserOptions,
   saveScreenshots: boolean,
 ): Promise<BrowserSession> {
   const { chromePath, headful, forceHeadful, extraArgs, viewport } = options;
   const debugLog: string[] = [];
+
+  // Some banks (e.g. BancoEstado) block headless browsers via TLS fingerprinting
+  // and require a visible Chrome window. On Linux this needs a display server.
+  if (forceHeadful && process.platform === "linux") {
+    if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
+      throw new Error(
+        "Este banco requiere modo headful (Chrome visible) pero no se detectó display.\n" +
+          "  Opciones: exporta DISPLAY=:0, usa una sesión con GUI, o configura Xvfb:\n" +
+          "  Xvfb: Xvfb :99 -screen 0 1280x900x24 & export DISPLAY=:99",
+      );
+    }
+  }
 
   const executablePath = findChrome(chromePath);
   if (!executablePath) {
