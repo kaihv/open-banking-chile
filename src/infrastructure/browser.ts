@@ -1,5 +1,5 @@
 import puppeteer, { type Browser, type Page } from "puppeteer-core";
-import { findChrome, saveScreenshot } from "../utils.js";
+import { DebugLog, findChrome, saveScreenshot } from "../utils.js";
 
 export interface BrowserOptions {
   chromePath?: string;
@@ -8,6 +8,8 @@ export interface BrowserOptions {
   forceHeadful?: boolean;
   extraArgs?: string[];
   viewport?: { width: number; height: number };
+  /** Callback invocado en cada línea de debug en tiempo real */
+  onDebug?: (line: string) => void;
 }
 
 export interface BrowserSession {
@@ -52,8 +54,8 @@ export async function launchBrowser(
   options: BrowserOptions,
   saveScreenshots: boolean,
 ): Promise<BrowserSession> {
-  const { chromePath, headful, forceHeadful, extraArgs, viewport } = options;
-  const debugLog: string[] = [];
+  const { chromePath, headful, forceHeadful, extraArgs, viewport, onDebug } = options;
+  const debugLog: string[] = onDebug ? new DebugLog(onDebug) : [];
 
   // Some banks (e.g. BancoEstado) block headless browsers via TLS fingerprinting
   // and require a visible Chrome window. On Linux this needs a display server.

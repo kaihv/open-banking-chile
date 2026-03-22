@@ -4,6 +4,27 @@ import type { Page } from "puppeteer-core";
 import type { BankMovement, CardOwner } from "./types.js";
 import { CARD_OWNER } from "./types.js";
 
+/**
+ * Array de strings que llama a un callback en cada push.
+ * Úsalo en lugar de `string[]` para transmitir logs en tiempo real.
+ */
+export class DebugLog extends Array<string> {
+  private readonly _onDebug?: (line: string) => void;
+
+  constructor(onDebug?: (line: string) => void) {
+    super();
+    this._onDebug = onDebug;
+  }
+
+  override push(...items: string[]): number {
+    for (const item of items) {
+      super.push(item);
+      this._onDebug?.(item);
+    }
+    return this.length;
+  }
+}
+
 /** Formatea un RUT chileno (ej: "123456789" → "12.345.678-9") */
 export function formatRut(rut: string): string {
   const clean = rut.replace(/[.\-]/g, "");
@@ -179,6 +200,15 @@ export function normalizeOwner(raw?: string): CardOwner | undefined {
 export function deduplicateMovements(movements: BankMovement[]): BankMovement[] {
   const seen = new Set<string>();
   return movements.filter((m) => {
+    // API-sourced movements have balance=0 (we don't get per-movement balance from the API).
+    // These should never be deduplicated — the API is authoritative and two identical
+    // charges (e.g. same toll twice in a day) are both real transactions.
+    if (m.balance === 0) return true;
+
+    // HTML-scraped movements carry the running account balance after each transaction.
+    // The same row re-fetched across paginated pages will have the same balance,
+    // so including it in the key correctly removes pagination duplicates while
+    // keeping legitimately repeated transactions (which have different balances).
     const key = `${m.date}|${m.description}|${m.amount}|${m.balance ?? ""}|${m.source}|${m.owner ?? ""}`;
     if (seen.has(key)) return false;
     seen.add(key);

@@ -1,6 +1,8 @@
 import type { Frame, Page } from "puppeteer-core";
 import type { BankMovement, BankScraper, ScrapeResult, ScraperOptions } from "../types.js";
-import { deduplicateMovements, closePopups, delay } from "../utils.js";
+import { MOVEMENT_SOURCE } from "../types.js";
+import { deduplicateMovements, closePopups, delay, normalizeDate, parseChileanAmount } from "../utils.js";
+import { createInterceptor } from "../intercept.js";
 import { runScraper } from "../infrastructure/scraper-runner.js";
 import type { BrowserSession } from "../infrastructure/browser.js";
 import { fillRut, fillPassword, clickSubmit, detectLoginError } from "../actions/login.js";
@@ -14,6 +16,138 @@ import { clickTcTab, extractCreditCardMovements } from "../actions/credit-card.j
 // ─── Santander-specific constants ────────────────────────────────────
 
 const BANK_URL = "https://banco.santander.cl/personas";
+
+// ─── API endpoint prefixes ───────────────────────────────────────
+const SANTANDER_CHECKING_API_PREFIX =
+  "https://openbanking.santander.cl/account_balances_transactions_and_withholdings_retail/v1/current-accounts/transactions";
+const SANTANDER_CC_API_PREFIX =
+  "https://api-dsk.santander.cl/perdsk/tarjetasDeCredito/consultaUltimosMovimientos";
+const SANTANDER_CC_BILLED_API_PREFIX =
+  "https://api-dsk.santander.cl/perdsk/tarjetasDeCredito/estadoCuentaNacional";
+
+// ─── API response normalizers ────────────────────────────────────
+
+interface SantanderCheckingApiMovement {
+  transactionDate: string; // "2026-03-19"
+  movementAmount: string; // "00000010000000-" (centavos, trailing - = debit)
+  chargePaymentFlag: string; // "D" = debit, "H" = haber/credit
+  observation: string;
+  expandedCode: string;
+  newBalance?: string;
+}
+
+export function normalizeSantanderCheckingApiMovements(captures: unknown[]): BankMovement[] {
+  const movements: BankMovement[] = [];
+  for (const capture of captures) {
+    const obj = capture as { movements?: SantanderCheckingApiMovement[] };
+    const list = obj?.movements;
+    if (!Array.isArray(list)) continue;
+    for (const m of list) {
+      const digits = m.movementAmount.replace(/[^0-9]/g, "");
+      const raw = parseInt(digits, 10);
+      if (!raw || isNaN(raw)) continue;
+      const clp = raw / 100;
+      const isDebit = m.chargePaymentFlag === "D" || m.movementAmount.endsWith("-");
+      const amount = isDebit ? -clp : clp;
+      const description = (m.observation?.trim() || m.expandedCode?.trim() || "").trim();
+      let balance = 0;
+      if (m.newBalance) {
+        const balDigits = m.newBalance.replace(/[^0-9]/g, "");
+        balance = Math.round(parseInt(balDigits, 10) / 100);
+      }
+      movements.push({
+        date: normalizeDate(m.transactionDate),
+        description,
+        amount,
+        balance,
+        source: MOVEMENT_SOURCE.account,
+      });
+    }
+  }
+  return movements;
+}
+
+interface SantanderCcApiMovement {
+  Fecha: string; // "18/01/2026"
+  Comercio: string;
+  Descripcion: string;
+  Importe: string; // "3.990" (Chilean thousands)
+  IndicadorDebeHaber: string; // "D" = debit, "H" = credit
+}
+
+export function isSaldoInicial(description: string): boolean {
+  return /saldo\s+inicial/i.test(description);
+}
+
+export function normalizeSantanderUnbilledApiMovements(captures: unknown[]): BankMovement[] {
+  const movements: BankMovement[] = [];
+  for (const capture of captures) {
+    const obj = capture as { DATA?: { MatrizMovimientos?: SantanderCcApiMovement[] } };
+    const list = obj?.DATA?.MatrizMovimientos;
+    if (!Array.isArray(list)) continue;
+    for (const m of list) {
+      const raw = parseChileanAmount(m.Importe);
+      if (!raw || isNaN(raw)) continue;
+      const isDebit = m.IndicadorDebeHaber === "D";
+      const amount = isDebit ? -raw : raw;
+      const description = (m.Comercio?.trim() || m.Descripcion?.trim() || "").trim();
+      if (isSaldoInicial(description)) continue;
+      movements.push({
+        date: normalizeDate(m.Fecha),
+        description,
+        amount,
+        balance: 0,
+        source: MOVEMENT_SOURCE.credit_card_unbilled,
+      });
+    }
+  }
+  return movements;
+}
+
+interface SantanderBilledApiMovement {
+  FechaTxs: string; // "2026-01-28"
+  NombreComercio: string;
+  MontoTxs: string; // "0000833685" or "50.000" (Chilean thousands, leading zeros)
+  NumeroCuotas: string; // "00"
+  TotalCuotas: string; // "00"
+}
+
+export function normalizeSantanderBilledApiMovements(captures: unknown[]): BankMovement[] {
+  const movements: BankMovement[] = [];
+  for (const capture of captures) {
+    const path = (capture as Record<string, unknown>)?.DATA as Record<string, unknown> | undefined;
+    const response = path?.AS_TIB_WM02_CONEstCtaNacional_Response as
+      | Record<string, unknown>
+      | undefined;
+    const output = response?.OUTPUT as Record<string, unknown> | undefined;
+    const list = output?.Matriz as SantanderBilledApiMovement[] | undefined;
+    if (!Array.isArray(list)) continue;
+    for (const m of list) {
+      // Strip leading zeros + dots (Chilean thousands separator), parse as integer pesos
+      const cleaned = m.MontoTxs.replace(/^0+/, "").replace(/\./g, "") || "0";
+      const raw = parseInt(cleaned, 10);
+      if (!raw || isNaN(raw)) continue;
+      if (isSaldoInicial(m.NombreComercio)) continue;
+      const isPayment = m.NombreComercio.toLowerCase().includes("monto cancelado");
+      const amount = isPayment ? raw : -raw;
+      const totalCuotas = parseInt(m.TotalCuotas.replace(/^0+/, "") || "0", 10);
+      const currentCuota = parseInt(m.NumeroCuotas.replace(/^0+/, "") || "0", 10);
+      const installments =
+        totalCuotas > 0
+          ? `${String(currentCuota).padStart(2, "0")}/${String(totalCuotas).padStart(2, "0")}`
+          : undefined;
+      movements.push({
+        date: normalizeDate(m.FechaTxs),
+        description: m.NombreComercio,
+        amount,
+        balance: 0,
+        source: MOVEMENT_SOURCE.credit_card_billed,
+        ...(installments ? { installments } : {}),
+      });
+    }
+  }
+  return movements;
+}
 
 // Sidebar menu IDs — generated by Santander's Angular framework, may change
 const SIDEBAR = {
@@ -191,6 +325,13 @@ async function scrapeSantander(
   const bank = "santander";
   const progress = onProgress || (() => {});
 
+  // Install API interceptor before first page.goto()
+  const interceptor = await createInterceptor(page, [
+    { id: "santander-checking", urlPrefix: SANTANDER_CHECKING_API_PREFIX },
+    { id: "santander-credit-card-unbilled", urlPrefix: SANTANDER_CC_API_PREFIX },
+    { id: "santander-credit-card-billed", urlPrefix: SANTANDER_CC_BILLED_API_PREFIX },
+  ]);
+
   // 1. Navigate
   debugLog.push("1. Navigating to Santander...");
   progress("Abriendo sitio del banco...");
@@ -293,18 +434,33 @@ async function scrapeSantander(
   }
 
   let movements: BankMovement[] = [];
-  if (accounts.length <= 1) {
-    movements = await paginateAndExtract(page, extractAccountMovements, debugLog);
-  } else {
-    for (const account of accounts) {
-      const switched = await selectMovementAccount(page, account.index);
-      if (!switched) {
-        debugLog.push(`  Could not switch to ${account.label}`);
-        continue;
+
+  // Try API interception for checking account
+  const checkingCaptures = await interceptor.waitFor("santander-checking", 10_000);
+  if (checkingCaptures.length > 0) {
+    debugLog.push(`  Checking API: ${checkingCaptures.length} response(s) captured`);
+    const apiMovements = normalizeSantanderCheckingApiMovements(checkingCaptures);
+    debugLog.push(`  Checking API movements: ${apiMovements.length}`);
+    if (apiMovements.length > 0) {
+      movements.push(...apiMovements);
+    }
+  }
+
+  if (movements.length === 0) {
+    debugLog.push("  Checking API: no data, falling back to HTML extraction");
+    if (accounts.length <= 1) {
+      movements = await paginateAndExtract(page, extractAccountMovements, debugLog);
+    } else {
+      for (const account of accounts) {
+        const switched = await selectMovementAccount(page, account.index);
+        if (!switched) {
+          debugLog.push(`  Could not switch to ${account.label}`);
+          continue;
+        }
+        const acctMovements = await paginateAndExtract(page, extractAccountMovements, debugLog);
+        movements.push(...acctMovements);
+        debugLog.push(`  ${account.label}: ${acctMovements.length} movement(s)`);
       }
-      const acctMovements = await paginateAndExtract(page, extractAccountMovements, debugLog);
-      movements.push(...acctMovements);
-      debugLog.push(`  ${account.label}: ${acctMovements.length} movement(s)`);
     }
   }
   movements = deduplicateMovements(movements);
@@ -315,14 +471,30 @@ async function scrapeSantander(
   const tcReady = await navigateToCreditCardSection(page, debugLog);
   if (tcReady) {
     if (await clickTcTab(page, "movimientos por facturar")) {
-      const unbilled = await extractCreditCardMovements(page, "unbilled");
-      movements.push(...unbilled);
-      debugLog.push(`  TC por facturar: ${unbilled.length} movement(s)`);
+      const unbilledCaptures = await interceptor.waitFor("santander-credit-card-unbilled", 10_000);
+      if (unbilledCaptures.length > 0) {
+        const unbilledMovements = normalizeSantanderUnbilledApiMovements(unbilledCaptures);
+        movements.push(...unbilledMovements);
+        debugLog.push(`  CC API (unbilled): ${unbilledMovements.length} movement(s)`);
+      } else {
+        debugLog.push("  CC API (unbilled): no data, falling back to HTML extraction");
+        const unbilled = await extractCreditCardMovements(page, "unbilled");
+        movements.push(...unbilled);
+        debugLog.push(`  TC por facturar: ${unbilled.length} movement(s)`);
+      }
     }
     if (await clickTcTab(page, "movimientos facturados")) {
-      const billed = await extractCreditCardMovements(page, "billed");
-      movements.push(...billed);
-      debugLog.push(`  TC facturados: ${billed.length} movement(s)`);
+      const billedCaptures = await interceptor.waitFor("santander-credit-card-billed", 10_000);
+      if (billedCaptures.length > 0) {
+        const billedMovements = normalizeSantanderBilledApiMovements(billedCaptures);
+        movements.push(...billedMovements);
+        debugLog.push(`  CC API (billed): ${billedMovements.length} movement(s)`);
+      } else {
+        debugLog.push("  CC API (billed): no data, falling back to HTML extraction");
+        const billed = await extractCreditCardMovements(page, "billed");
+        movements.push(...billed);
+        debugLog.push(`  TC facturados: ${billed.length} movement(s)`);
+      }
     }
   } else {
     debugLog.push("  Could not open credit card section.");

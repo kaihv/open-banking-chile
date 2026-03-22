@@ -6,10 +6,46 @@ import { runScraper } from "../infrastructure/scraper-runner.js";
 import type { BrowserSession } from "../infrastructure/browser.js";
 import { detect2FA, waitFor2FA } from "../actions/two-factor.js";
 import { detectLoginError } from "../actions/login.js";
+import { createInterceptor } from "../intercept.js";
 
 // ─── BCI-specific constants ──────────────────────────────────────
 
 const LOGIN_URL = "https://www.bci.cl/corporativo/banco-en-linea/personas";
+
+const BCI_CHECKING_API_PREFIX =
+  "https://apilocal.bci.cl/bci-produccion/api-bci/bff-saldosyultimosmovimientoswebpersonas";
+
+// ─── API response normalizers ────────────────────────────────────
+
+interface BciApiMovement {
+  fechaMovimiento: string;
+  monto: string;
+  tipo: string; // 'C' = cargo (debit), 'A' = abono (credit)
+  glosa: string;
+}
+
+export function normalizeBciApiMovements(captures: unknown[]): BankMovement[] {
+  const movements: BankMovement[] = [];
+  for (const capture of captures) {
+    const obj = capture as { movimientos?: BciApiMovement[] };
+    const list = obj?.movimientos;
+    if (!Array.isArray(list)) continue;
+    for (const m of list) {
+      const raw = Math.round(parseFloat(m.monto));
+      if (!raw || isNaN(raw)) continue;
+      const amount = m.tipo === "C" ? -raw : raw;
+      const dateStr = m.fechaMovimiento?.split("T")[0] ?? "";
+      movements.push({
+        date: normalizeDate(dateStr),
+        description: m.glosa ?? "",
+        amount,
+        balance: 0,
+        source: MOVEMENT_SOURCE.account,
+      });
+    }
+  }
+  return movements;
+}
 
 const IFRAME_PATTERNS = {
   content: ["miBanco.jsf", "vistaSupercartola"],
@@ -184,7 +220,7 @@ async function extractMovementsFromFrame(frame: Frame, debugLog: string[]): Prom
   return all;
 }
 
-async function extractTCMovements(frame: Frame, tab: string, billingType: string, source: MOVEMENT_SOURCE, debugLog: string[]): Promise<BankMovement[]> {
+async function extractTCMovements(frame: Frame, tab: string, billingType: string, source: typeof MOVEMENT_SOURCE[keyof typeof MOVEMENT_SOURCE], debugLog: string[]): Promise<BankMovement[]> {
   await frame.evaluate((tabName: string) => {
     for (const span of document.querySelectorAll("bci-wk-tabs span, .listTab span, .listTab a span")) {
       if (span.textContent?.trim() === tabName) { (span.closest("a") || span as HTMLElement).click(); return; }
@@ -239,6 +275,11 @@ async function scrapeBci(session: BrowserSession, options: ScraperOptions): Prom
   const bank = "bci";
   const progress = onProgress || (() => {});
 
+  // Install API interceptor before first page.goto()
+  const interceptor = await createInterceptor(page, [
+    { id: "bci-checking", urlPrefix: BCI_CHECKING_API_PREFIX },
+  ]);
+
   progress("Abriendo sitio del banco...");
   const loginResult = await bciLogin(page, rut, password, debugLog, doSave);
   if (!loginResult.success) {
@@ -259,24 +300,16 @@ async function scrapeBci(session: BrowserSession, options: ScraperOptions): Prom
     const movFrame = await waitForFrame(page, IFRAME_PATTERNS.movements, 15000);
     if (movFrame) {
       await delay(3000);
-      const accounts = await movFrame.evaluate((sel: string) => {
-        const select = document.querySelector(sel) as HTMLSelectElement | null;
-        if (!select) return [];
-        return Array.from(select.options).map((o) => ({ value: o.value, label: o.textContent?.trim() || "" }));
-      }, ACCOUNT_SELECT);
-      debugLog.push(`  Found ${accounts.length} account(s)`);
 
-      for (let i = 0; i < accounts.length; i++) {
-        if (i > 0) {
-          await movFrame.evaluate((value: string, sel: string) => {
-            const select = document.querySelector(sel) as HTMLSelectElement | null;
-            if (!select) return;
-            select.value = value;
-            select.dispatchEvent(new Event("change", { bubbles: true }));
-          }, accounts[i].value, ACCOUNT_SELECT);
-          await delay(3000);
-        }
-        if (balance === undefined) {
+      // Try API interception first
+      const captured = await interceptor.waitFor("bci-checking", 10_000);
+      if (captured.length > 0) {
+        debugLog.push(`  Checking API: ${captured.length} response(s) captured`);
+        const apiMovements = normalizeBciApiMovements(captured);
+        debugLog.push(`  Checking API movements: ${apiMovements.length}`);
+        if (apiMovements.length > 0) {
+          allMovements.push(...apiMovements);
+          // Still extract balance from the iframe DOM
           balance = await movFrame.evaluate(() => {
             const el = document.querySelector("#saldoDis + div, .bci-h2-w800");
             if (!el) return undefined;
@@ -285,9 +318,40 @@ async function scrapeBci(session: BrowserSession, options: ScraperOptions): Prom
             return undefined;
           });
         }
-        const movements = await extractMovementsFromFrame(movFrame, debugLog);
-        const prefixed = accounts.length > 1 ? movements.map(m => ({ ...m, description: `[${accounts[i].label}] ${m.description}`.trim() })) : movements;
-        allMovements.push(...prefixed);
+      }
+
+      if (allMovements.length === 0) {
+        debugLog.push("  Checking API: no data, falling back to HTML extraction");
+        const accounts = await movFrame.evaluate((sel: string) => {
+          const select = document.querySelector(sel) as HTMLSelectElement | null;
+          if (!select) return [];
+          return Array.from(select.options).map((o) => ({ value: o.value, label: o.textContent?.trim() || "" }));
+        }, ACCOUNT_SELECT);
+        debugLog.push(`  Found ${accounts.length} account(s)`);
+
+        for (let i = 0; i < accounts.length; i++) {
+          if (i > 0) {
+            await movFrame.evaluate((value: string, sel: string) => {
+              const select = document.querySelector(sel) as HTMLSelectElement | null;
+              if (!select) return;
+              select.value = value;
+              select.dispatchEvent(new Event("change", { bubbles: true }));
+            }, accounts[i].value, ACCOUNT_SELECT);
+            await delay(3000);
+          }
+          if (balance === undefined) {
+            balance = await movFrame.evaluate(() => {
+              const el = document.querySelector("#saldoDis + div, .bci-h2-w800");
+              if (!el) return undefined;
+              const match = (el as HTMLElement).textContent?.trim().match(/\$\s*([\d.]+)/);
+              if (match) return parseInt(match[1].replace(/\./g, ""), 10);
+              return undefined;
+            });
+          }
+          const movements = await extractMovementsFromFrame(movFrame, debugLog);
+          const prefixed = accounts.length > 1 ? movements.map(m => ({ ...m, description: `[${accounts[i].label}] ${m.description}`.trim() })) : movements;
+          allMovements.push(...prefixed);
+        }
       }
     }
   }

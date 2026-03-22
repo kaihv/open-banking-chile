@@ -96,6 +96,8 @@ export interface ScraperOptions extends BankCredentials {
   owner?: "T" | "A" | "B";
   /** Callback de progreso para mostrar estado al usuario */
   onProgress?: (step: string) => void;
+  /** Callback invocado en cada línea de debug en tiempo real */
+  onDebug?: (line: string) => void;
 }
 
 /** Interfaz que debe implementar cada banco */

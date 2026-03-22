@@ -5,6 +5,10 @@ import { parseChileanAmount, normalizeDate, deduplicateMovements, delay } from "
 
 type TcTab = "unbilled" | "billed";
 
+function isSaldoInicial(description: string): boolean {
+  return /saldo\s+inicial/i.test(description);
+}
+
 function isCreditCardCredit(description: string): boolean {
   const text = description.toLowerCase();
   return (
@@ -84,6 +88,7 @@ export async function extractCreditCardMovements(
       if (hasDate) lastDate = rawDate;
 
       const description = detailIndex >= 0 ? (cells[detailIndex] || "") : "";
+      if (isSaldoInicial(description)) continue;
 
       let amount = "";
       if (cargoIndex >= 0 && cells[cargoIndex]) {
