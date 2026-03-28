@@ -1,5 +1,5 @@
 import type { Page, Frame } from "puppeteer-core";
-import type { BankMovement, BankScraper, CreditCardBalance, ScrapeResult, ScraperOptions } from "../types.js";
+import type { BankMovement, BankScraper, CreditCardBalance, MovementSource, ScrapeResult, ScraperOptions } from "../types.js";
 import { MOVEMENT_SOURCE } from "../types.js";
 import { closePopups, delay, formatRut, parseChileanAmount, normalizeDate, deduplicateMovements } from "../utils.js";
 import { runScraper } from "../infrastructure/scraper-runner.js";
@@ -184,7 +184,7 @@ async function extractMovementsFromFrame(frame: Frame, debugLog: string[]): Prom
   return all;
 }
 
-async function extractTCMovements(frame: Frame, tab: string, billingType: string, source: MOVEMENT_SOURCE, debugLog: string[]): Promise<BankMovement[]> {
+async function extractTCMovements(frame: Frame, tab: string, billingType: string, source: MovementSource, debugLog: string[]): Promise<BankMovement[]> {
   await frame.evaluate((tabName: string) => {
     for (const span of document.querySelectorAll("bci-wk-tabs span, .listTab span, .listTab a span")) {
       if (span.textContent?.trim() === tabName) { (span.closest("a") || span as HTMLElement).click(); return; }
