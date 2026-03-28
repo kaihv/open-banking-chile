@@ -194,6 +194,148 @@ async function paginate(page: Page, debugLog: string[]): Promise<BankMovement[]>
   return deduplicateMovements(all);
 }
 
+// ─── Historical months (Cartola histórica via TXT) ───────────────
+
+const CARTOLA_URL = "https://www.bancosecurity.cl/Empresas/Cuentas/cartola_corriente.asp";
+
+/**
+ * Parses the fixed-width TXT format from Banco Security cartola histórica.
+ * Lines starting with "2" are movement records:
+ *   "2" + 10-char date (DD/MM/YYYY) + 50-char description + 9-char doc + 1-char type (C/A) + "+" + amount + balance
+ * "C" = Cargo (debit → negative), "A" = Abono (credit → positive)
+ */
+function parseTxtMovements(txt: string): BankMovement[] {
+  const movements: BankMovement[] = [];
+  for (const rawLine of txt.split("\n")) {
+    const line = rawLine.replace(/\r$/, "");
+    if (!line.startsWith("2")) continue;
+    // date: chars 1-10, desc: 11-60, doc: 61-69, type: 70, "+": 71, rest: amounts
+    const rawDate    = line.slice(1, 11).trim();     // "DD/MM/YYYY"
+    const rawDesc    = line.slice(11, 61).trim();
+    const typeChar   = line.slice(70, 71);            // "C" or "A"
+    const rest       = line.slice(72);                // "+       48000,00    16588418,00"
+    if (!/\d{1,2}\/\d{1,2}\/\d{4}/.test(rawDate)) continue;
+
+    // rest contains two Chilean amounts separated by whitespace
+    const parts = rest.trim().split(/\s+/);
+    if (parts.length < 1) continue;
+    const rawAmount  = parts[0];
+    const rawBalance = parts[1] ?? "";
+
+    let amount = parseChileanAmount(rawAmount);
+    if (amount === 0) continue;
+    if (typeChar === "C") amount = -Math.abs(amount);
+    else amount = Math.abs(amount);
+
+    movements.push({
+      date:        normalizeDate(rawDate),
+      description: rawDesc,
+      amount,
+      balance:     rawBalance ? parseChileanAmount(rawBalance) : 0,
+      source:      MOVEMENT_SOURCE.account,
+    } as BankMovement);
+  }
+  return movements;
+}
+
+/**
+ * Navigates to Cartola histórica, reads the month select options,
+ * and fetches TXT content for up to `months` historical periods.
+ */
+async function fetchHistoricalMonths(page: Page, months: number, debugLog: string[]): Promise<BankMovement[]> {
+  debugLog.push(`  Fetching up to ${months} historical month(s)...`);
+
+  // Navigate to Cartola histórica via the Productos menu
+  const clickedProductos = await nativeClick(page, ["productos"]);
+  if (clickedProductos) await delay(1500);
+
+  const clickedCartola = await nativeClick(page, ["cartola histórica", "cartola historica"]);
+  if (clickedCartola) {
+    debugLog.push(`  Clicked: ${clickedCartola}`);
+    await delay(3000);
+  } else {
+    // Direct navigation as fallback
+    await page.goto(CARTOLA_URL, { waitUntil: "networkidle2", timeout: 30000 });
+    await delay(2000);
+  }
+
+  // Find the frame containing select#fecha (content may be in an iframe)
+  type FrameCtx = { evaluate: Page["evaluate"] };
+  const allFrames: FrameCtx[] = [page, ...page.frames().filter(f => f !== page.mainFrame()) as unknown as FrameCtx[]];
+
+  let cartolaFrame: FrameCtx | null = null;
+  for (const ctx of allFrames) {
+    const found: boolean = await ctx.evaluate(() => !!document.querySelector("#fecha")).catch(() => false);
+    if (found) { cartolaFrame = ctx; break; }
+  }
+
+  if (!cartolaFrame) {
+    debugLog.push("  select#fecha not found in any frame — skipping historical");
+    return [];
+  }
+
+  // Read available month options from select#fecha
+  const options: Array<{ value: string; text: string }> = await cartolaFrame.evaluate(() => {
+    const sel = document.querySelector("#fecha") as HTMLSelectElement | null;
+    if (!sel) return [];
+    return Array.from(sel.options).map((o) => ({ value: o.value, text: o.text.trim() }));
+  });
+  debugLog.push(`  Available months: ${options.map(o => o.text).join(", ")}`);
+
+  // Skip placeholder "Seleccionar" and any option with no meaningful value
+  const realOptions = options.filter(o => o.value && o.text.toLowerCase() !== "seleccionar");
+  debugLog.push(`  Real months: ${realOptions.map(o => o.text).join(", ")}`);
+
+  const all: BankMovement[] = [];
+  const take = Math.min(months, realOptions.length);
+
+  for (let i = 0; i < take; i++) {
+    const opt = realOptions[i];
+    debugLog.push(`  Fetching month: ${opt.text}`);
+
+    // Set select value and click Consultar (in the same frame)
+    await cartolaFrame.evaluate((val: string) => {
+      const sel = document.querySelector("#fecha") as HTMLSelectElement | null;
+      if (sel) sel.value = val;
+    }, opt.value);
+    await delay(300);
+
+    const submitted: boolean = await cartolaFrame.evaluate(() => {
+      const btn = document.querySelector("#buscar") as HTMLElement | null;
+      if (btn) { btn.click(); return true; }
+      return false;
+    });
+    if (!submitted) { debugLog.push(`  Could not click Consultar for ${opt.text}`); continue; }
+    await delay(5000);
+
+    // Search for TXT link in cartolaFrame and all child frames
+    const searchContexts: FrameCtx[] = [cartolaFrame, ...page.frames().filter(f => f !== page.mainFrame()) as unknown as FrameCtx[]];
+    let txtHref: string | null = null;
+    for (const ctx of searchContexts) {
+      txtHref = await ctx.evaluate(() => {
+        for (const a of Array.from(document.querySelectorAll("a")) as HTMLAnchorElement[]) {
+          if (a.innerText?.trim().toUpperCase() === "TXT" && (a as HTMLElement).offsetParent !== null) return a.href;
+        }
+        return null;
+      }).catch(() => null);
+      if (txtHref) break;
+    }
+
+    if (!txtHref) { debugLog.push(`  No TXT link found for ${opt.text}`); continue; }
+
+    const content: string = await cartolaFrame.evaluate(async (url: string) => {
+      const r = await fetch(url, { credentials: "include" });
+      return r.text();
+    }, txtHref);
+
+    const parsed = parseTxtMovements(content);
+    debugLog.push(`  Parsed ${parsed.length} movements from ${opt.text}`);
+    all.push(...parsed);
+  }
+
+  return all;
+}
+
 // ─── Main scrape function ─────────────────────────────────────────
 
 async function scrapeBancoSecurity(session: BrowserSession, options: ScraperOptions): Promise<ScrapeResult> {
@@ -296,9 +438,20 @@ async function scrapeBancoSecurity(session: BrowserSession, options: ScraperOpti
   progress("Extrayendo movimientos...");
 
 
-  const movements = await paginate(page, debugLog);
+  const currentMovements = await paginate(page, debugLog);
+  debugLog.push(`9. Extracted ${currentMovements.length} current-period movements`);
 
-  debugLog.push(`9. Extracted ${movements.length} movements`);
+  // Historical months via Cartola histórica (TXT format)
+  const historicalMonths = parseInt(process.env.BANCOSECURITY_MONTHS ?? "0", 10) || 0;
+  let allMovements = currentMovements;
+  if (historicalMonths > 0) {
+    progress(`Obteniendo ${historicalMonths} mes(es) histórico(s)...`);
+    const historical = await fetchHistoricalMonths(page, historicalMonths, debugLog);
+    allMovements = deduplicateMovements([...currentMovements, ...historical]);
+    debugLog.push(`10. Total after merging historical: ${allMovements.length} movements`);
+  }
+
+  const movements = allMovements;
   progress(`Listo — ${movements.length} movimientos`);
   await doSave(page, "05-final");
 
