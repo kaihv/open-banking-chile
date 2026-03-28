@@ -280,11 +280,9 @@ async function fetchHistoricalMonths(page: Page, months: number, debugLog: strin
     if (!sel) return [];
     return Array.from(sel.options).map((o) => ({ value: o.value, text: o.text.trim() }));
   });
-  debugLog.push(`  Available months: ${options.map(o => o.text).join(", ")}`);
-
   // Skip placeholder "Seleccionar" and any option with no meaningful value
   const realOptions = options.filter(o => o.value && o.text.toLowerCase() !== "seleccionar");
-  debugLog.push(`  Real months: ${realOptions.map(o => o.text).join(", ")}`);
+  debugLog.push(`  Available months: ${realOptions.map(o => o.text).join(", ")}`);
 
   const all: BankMovement[] = [];
   const take = Math.min(months, realOptions.length);
@@ -306,19 +304,22 @@ async function fetchHistoricalMonths(page: Page, months: number, debugLog: strin
       return false;
     });
     if (!submitted) { debugLog.push(`  Could not click Consultar for ${opt.text}`); continue; }
-    await delay(5000);
 
-    // Search for TXT link in cartolaFrame and all child frames
-    const searchContexts: FrameCtx[] = [cartolaFrame, ...page.frames().filter(f => f !== page.mainFrame()) as unknown as FrameCtx[]];
+    // Poll for TXT link up to 8s instead of a fixed delay
     let txtHref: string | null = null;
-    for (const ctx of searchContexts) {
-      txtHref = await ctx.evaluate(() => {
-        for (const a of Array.from(document.querySelectorAll("a")) as HTMLAnchorElement[]) {
-          if (a.innerText?.trim().toUpperCase() === "TXT" && (a as HTMLElement).offsetParent !== null) return a.href;
-        }
-        return null;
-      }).catch(() => null);
-      if (txtHref) break;
+    const deadline = Date.now() + 8000;
+    while (!txtHref && Date.now() < deadline) {
+      const searchContexts: FrameCtx[] = [cartolaFrame, ...page.frames().filter(f => f !== page.mainFrame()) as unknown as FrameCtx[]];
+      for (const ctx of searchContexts) {
+        txtHref = await ctx.evaluate(() => {
+          for (const a of Array.from(document.querySelectorAll("a")) as HTMLAnchorElement[]) {
+            if (a.innerText?.trim().toUpperCase() === "TXT" && (a as HTMLElement).offsetParent !== null) return a.href;
+          }
+          return null;
+        }).catch(() => null);
+        if (txtHref) break;
+      }
+      if (!txtHref) await delay(500);
     }
 
     if (!txtHref) { debugLog.push(`  No TXT link found for ${opt.text}`); continue; }
@@ -396,7 +397,7 @@ async function scrapeBancoSecurity(session: BrowserSession, options: ScraperOpti
     return false;
   });
   if (!submitted) await page.keyboard.press("Enter");
-  await delay(8000);
+  await waitForDashboard(page);
   await doSave(page, "03-after-login");
 
   // 6. Validate login
@@ -436,13 +437,11 @@ async function scrapeBancoSecurity(session: BrowserSession, options: ScraperOpti
   // 8. Extract movements
   debugLog.push("8. Extracting movements...");
   progress("Extrayendo movimientos...");
-
-
   const currentMovements = await paginate(page, debugLog);
   debugLog.push(`9. Extracted ${currentMovements.length} current-period movements`);
 
   // Historical months via Cartola histórica (TXT format)
-  const historicalMonths = parseInt(process.env.BANCOSECURITY_MONTHS ?? "0", 10) || 0;
+  const historicalMonths = Math.min(Math.max(parseInt(process.env.BANCOSECURITY_MONTHS ?? "0", 10) || 0, 0), 24);
   let allMovements = currentMovements;
   if (historicalMonths > 0) {
     progress(`Obteniendo ${historicalMonths} mes(es) histórico(s)...`);
