@@ -84,12 +84,13 @@ async function navigateToMovements(page: Page, debugLog: string[]): Promise<void
 
   const subTargets = ["cartola", "movimientos", "últimos movimientos", "estado de cuenta"];
   for (const target of subTargets) {
-    const clicked = await page.evaluate(new Function("target", `${allDeepJs()}
+    const clicked = await page.evaluate(new Function(`${allDeepJs()}
+      var target = ${JSON.stringify(target)};
       for (const el of allDeep(document, "a, button, [role='menuitem'], li, span")) {
         const text = el.innerText?.trim().toLowerCase() || "";
         if (text.includes(target) && text.length < 60) { el.click(); return true; }
       }
-      return false;`).bind(null, target) as () => boolean);
+      return false;`) as () => boolean);
     if (clicked) { debugLog.push(`  Clicked: ${target}`); await delay(5000); return; }
   }
 }
@@ -216,12 +217,13 @@ async function navigateToPreviousPeriod(page: Page, debugLog: string[], doSave: 
   const subTargets = ["cartola", "movimientos cuenta", "cuenta corriente", "movimientos"];
   let entered = false;
   for (const target of subTargets) {
-    const clicked = await page.evaluate(new Function("t", `${allDeepJs()}
+    const clicked = await page.evaluate(new Function(`${allDeepJs()}
+      var t = ${JSON.stringify(target)};
       for (const el of allDeep(document, "a, button, [role='menuitem'], li, span")) {
         const text = el.innerText?.trim().toLowerCase() || "";
         if (text.includes(t) && text.length < 80) { el.click(); return true; }
       }
-      return false;`).bind(null, target) as () => boolean);
+      return false;`) as () => boolean);
     if (clicked) { debugLog.push(`  Sidebar: ${target}`); await delay(5000); entered = true; break; }
   }
   if (!entered) return false;
@@ -230,28 +232,30 @@ async function navigateToPreviousPeriod(page: Page, debugLog: string[], doSave: 
   const targets = ["movimientos anteriores", "consultar movimientos", "consultar cartolas"];
   let clicked = false;
   // Try main page
-  clicked = await page.evaluate(new Function("tgts", `${allDeepJs()}
+  clicked = await page.evaluate(new Function(`${allDeepJs()}
+    var tgts = ${JSON.stringify(targets)};
     for (const t of tgts) {
       for (const el of allDeep(document, "a, button, span, [role='tab'], [role='link'], li")) {
         const text = el.innerText?.trim().toLowerCase() || "";
         if (text.includes(t) && text.length < 80) { el.click(); return true; }
       }
     }
-    return false;`).bind(null, targets) as () => boolean);
+    return false;`) as () => boolean);
 
   // Try frames
   if (!clicked) {
     for (const frame of page.frames()) {
       if (frame === page.mainFrame()) continue;
       try {
-        clicked = await frame.evaluate(new Function("tgts", `${allDeepJs()}
+        clicked = await frame.evaluate(new Function(`${allDeepJs()}
+          var tgts = ${JSON.stringify(targets)};
           for (const t of tgts) {
             for (const el of allDeep(document, "a, button, span, [role='tab'], [role='link'], li")) {
               const text = el.innerText?.trim().toLowerCase() || "";
               if (text.includes(t) && text.length < 80) { el.click(); return true; }
             }
           }
-          return false;`).bind(null, targets) as () => boolean);
+          return false;`) as () => boolean);
         if (clicked) break;
       } catch { /* detached */ }
     }
