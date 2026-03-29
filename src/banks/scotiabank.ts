@@ -82,14 +82,26 @@ async function navigateToMovements(page: Page, debugLog: string[]): Promise<void
     return false;`) as () => boolean);
   if (clickedCuentas) { debugLog.push("  Sidebar: Cuentas"); await delay(2500); }
 
-  const subTargets = ["cartola", "movimientos", "últimos movimientos", "estado de cuenta"];
+  // Try clicking "Saldos y últimos movimientos" tab first (NOT "Cartolas" which shows PDFs)
+  const clickedSaldos = await page.evaluate(new Function(`${allDeepJs()}
+    for (const el of allDeep(document, "a, button, [role='tab'], li, span")) {
+      const text = el.innerText?.trim().toLowerCase() || "";
+      if (text.includes("saldos y") || text.includes("últimos movimientos") || text === "saldos") {
+        el.click(); return true;
+      }
+    }
+    return false;`) as () => boolean);
+  if (clickedSaldos) { debugLog.push("  Clicked: Saldos y últimos movimientos tab"); await delay(5000); return; }
+
+  const subTargets = ["movimientos", "estado de cuenta", "ver movimientos"];
   for (const target of subTargets) {
-    const clicked = await page.evaluate(new Function("target", `${allDeepJs()}
+    const clicked = await page.evaluate(new Function(`${allDeepJs()}
+      var target = ${JSON.stringify(target)};
       for (const el of allDeep(document, "a, button, [role='menuitem'], li, span")) {
         const text = el.innerText?.trim().toLowerCase() || "";
         if (text.includes(target) && text.length < 60) { el.click(); return true; }
       }
-      return false;`).bind(null, target) as () => boolean);
+      return false;`) as () => boolean);
     if (clicked) { debugLog.push(`  Clicked: ${target}`); await delay(5000); return; }
   }
 }
@@ -216,12 +228,13 @@ async function navigateToPreviousPeriod(page: Page, debugLog: string[], doSave: 
   const subTargets = ["cartola", "movimientos cuenta", "cuenta corriente", "movimientos"];
   let entered = false;
   for (const target of subTargets) {
-    const clicked = await page.evaluate(new Function("t", `${allDeepJs()}
+    const clicked = await page.evaluate(new Function(`${allDeepJs()}
+      var t = ${JSON.stringify(target)};
       for (const el of allDeep(document, "a, button, [role='menuitem'], li, span")) {
         const text = el.innerText?.trim().toLowerCase() || "";
         if (text.includes(t) && text.length < 80) { el.click(); return true; }
       }
-      return false;`).bind(null, target) as () => boolean);
+      return false;`) as () => boolean);
     if (clicked) { debugLog.push(`  Sidebar: ${target}`); await delay(5000); entered = true; break; }
   }
   if (!entered) return false;
@@ -230,28 +243,30 @@ async function navigateToPreviousPeriod(page: Page, debugLog: string[], doSave: 
   const targets = ["movimientos anteriores", "consultar movimientos", "consultar cartolas"];
   let clicked = false;
   // Try main page
-  clicked = await page.evaluate(new Function("tgts", `${allDeepJs()}
+  clicked = await page.evaluate(new Function(`${allDeepJs()}
+    var tgts = ${JSON.stringify(targets)};
     for (const t of tgts) {
       for (const el of allDeep(document, "a, button, span, [role='tab'], [role='link'], li")) {
         const text = el.innerText?.trim().toLowerCase() || "";
         if (text.includes(t) && text.length < 80) { el.click(); return true; }
       }
     }
-    return false;`).bind(null, targets) as () => boolean);
+    return false;`) as () => boolean);
 
   // Try frames
   if (!clicked) {
     for (const frame of page.frames()) {
       if (frame === page.mainFrame()) continue;
       try {
-        clicked = await frame.evaluate(new Function("tgts", `${allDeepJs()}
+        clicked = await frame.evaluate(new Function(`${allDeepJs()}
+          var tgts = ${JSON.stringify(targets)};
           for (const t of tgts) {
             for (const el of allDeep(document, "a, button, span, [role='tab'], [role='link'], li")) {
               const text = el.innerText?.trim().toLowerCase() || "";
               if (text.includes(t) && text.length < 80) { el.click(); return true; }
             }
           }
-          return false;`).bind(null, targets) as () => boolean);
+          return false;`) as () => boolean);
         if (clicked) break;
       } catch { /* detached */ }
     }
@@ -379,6 +394,27 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
   progress("Buscando cartola de cuenta...");
   await navigateToMovements(page, debugLog);
   await dismissScotiaTutorial(page, debugLog);
+
+  // Wait for movements table to load (spinner to disappear)
+  debugLog.push("7b. Waiting for movements to load...");
+  progress("Esperando carga de movimientos...");
+  const startWait = Date.now();
+  while (Date.now() - startWait < 20000) {
+    const hasTable = await page.evaluate(new Function(`${allDeepJs()}
+      // Check if a table with rows OR movement cards exist
+      const tables = allDeep(document, "table");
+      for (const t of tables) { if (t.querySelectorAll("tr").length > 1) return "table"; }
+      // Check for card-style movements
+      const cards = allDeep(document, "[class*='mov'], [class*='tran'], [class*='transaction']");
+      if (cards.length > 0) return "cards";
+      // Check if spinner is gone and there's text with amounts
+      const body = document.body?.innerText || "";
+      if (/\\$\\s*[\\d.]+/.test(body) && body.length > 500) return "text";
+      return null;`) as () => string | null);
+    if (hasTable) { debugLog.push(`  Content loaded: ${hasTable}`); break; }
+    await delay(2000);
+  }
+
   await doSave(page, "04-movements-page");
 
   // 8. Try expanding date range
@@ -411,23 +447,225 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
   debugLog.push(`9. Extracted ${movements.length} movements (current period)`);
   progress(`Periodo actual: ${movements.length} movimientos`);
 
-  // 10. Historical periods
-  const months = Math.min(Math.max(parseInt(process.env.SCOTIABANK_MONTHS || "0", 10) || 0, 0), 12);
+  // 10. Historical periods via "Consultar Cartolas" (month/year dropdowns)
+  const months = Math.min(Math.max(parseInt(process.env.SCOTIABANK_MONTHS || "3", 10) || 3, 0), 12);
   if (months > 0) {
-    debugLog.push(`10. Fetching ${months} additional period(s)...`);
-    progress(`Extrayendo ${months} periodo(s) histórico(s)...`);
-    const now = new Date();
-    for (let m = 0; m < months; m++) {
+    debugLog.push(`10. Fetching ${months} historical cartola(s)...`);
+    progress(`Extrayendo cartolas históricas...`);
+
+    // Navigate to Cartolas via sidebar: Cuentas → Cuenta Corriente → Ver cartolas
+    // Step 1: Click "Cuentas" in sidebar
+    await page.evaluate(new Function(`${allDeepJs()}
+      for (const el of allDeep(document, "nav a, nav button, aside a, aside button, a, button, li, span")) {
+        const text = el.innerText?.trim().toLowerCase() || "";
+        if (text === "cuentas" && text.length < 15) { el.click(); return true; }
+      }
+      return false;`) as () => boolean);
+    debugLog.push("  Sidebar: Cuentas");
+    await delay(2000);
+
+    // Step 2: Click "Cuenta Corriente" submenu
+    await page.evaluate(new Function(`${allDeepJs()}
+      for (const el of allDeep(document, "a, button, li, span")) {
+        const text = el.innerText?.trim().toLowerCase() || "";
+        if (text === "cuenta corriente" && text.length < 25) { el.click(); return true; }
+      }
+      return false;`) as () => boolean);
+    debugLog.push("  Sidebar: Cuenta Corriente");
+    await delay(2000);
+
+    // Step 3: Navigate to Cartolas tab — try URL param change first, then click
+    const currentUrl = page.url();
+    let clickedVerCartolas = false;
+
+    // Try URL-based navigation (change tab=saldos to tab=cartolas)
+    if (currentUrl.includes("tab=saldos") || currentUrl.includes("balancesmovements")) {
+      const cartolasUrl = currentUrl.includes("tab=")
+        ? currentUrl.replace(/tab=[^&]+/, "tab=cartolas")
+        : currentUrl + (currentUrl.includes("?") ? "&" : "?") + "tab=cartolas";
+      try {
+        await page.goto(cartolasUrl, { waitUntil: "networkidle2", timeout: 15000 });
+        clickedVerCartolas = true;
+        debugLog.push("  Navigated to Cartolas tab via URL");
+      } catch { /* fallback below */ }
+    }
+
+    // Fallback: click "Ver cartolas" or "Cartolas" tab
+    if (!clickedVerCartolas) {
+      clickedVerCartolas = await page.evaluate(new Function(`${allDeepJs()}
+        for (const el of allDeep(document, "a, button, li, span")) {
+          const text = el.innerText?.trim().toLowerCase() || "";
+          if (text === "ver cartolas" || text.includes("ver cartola")) { el.click(); return true; }
+        }
+        return false;`) as () => boolean);
+    }
+    if (!clickedVerCartolas) {
+      clickedVerCartolas = await page.evaluate(new Function(`${allDeepJs()}
+        for (const el of allDeep(document, "a, button, [role='tab'], li, span")) {
+          const text = el.innerText?.trim().toLowerCase() || "";
+          if (text === "cartolas" && text.length < 20) { el.click(); return true; }
+        }
+        return false;`) as () => boolean);
+    }
+
+    if (clickedVerCartolas) {
+      debugLog.push("  On Cartolas tab");
+      await delay(4000);
       await dismissScotiaTutorial(page, debugLog);
-      if (!(await navigateToPreviousPeriod(page, debugLog, doSave, m + 1))) break;
-      const target = new Date(now.getFullYear(), now.getMonth() - (m + 1), 1);
-      const firstDay = new Date(target.getFullYear(), target.getMonth(), 1);
-      const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0);
-      const fmt = (d: Date) => `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
-      if (!(await fillAndSubmitDateRange(page, fmt(firstDay), fmt(lastDay), debugLog))) break;
-      const periodMovements = await scotiaPaginate(page, debugLog);
-      debugLog.push(`  Period -${m + 1}: ${periodMovements.length} movements`);
-      movements.push(...periodMovements);
+
+      // Click "Consultar Cartolas" — check main page + all frames
+      let clickedConsultar = await page.evaluate(new Function(`${allDeepJs()}
+        for (const el of allDeep(document, "a, button, span")) {
+          const text = el.innerText?.trim().toLowerCase() || "";
+          if (text.includes("consultar cartola") && text.length < 40) { el.click(); return true; }
+        }
+        return false;`) as () => boolean);
+
+      // Try frames if not found in main page
+      if (!clickedConsultar) {
+        for (const frame of page.frames()) {
+          if (frame === page.mainFrame()) continue;
+          try {
+            clickedConsultar = await frame.evaluate(() => {
+              for (const el of document.querySelectorAll("a, button, span, div")) {
+                const text = el.innerText?.trim().toLowerCase() || "";
+                if (text.includes("consultar cartola") && text.length < 40) {
+                  (el as HTMLElement).click(); return true;
+                }
+              }
+              return false;
+            });
+            if (clickedConsultar) { debugLog.push("  Found Consultar Cartolas in iframe"); break; }
+          } catch { /* detached */ }
+        }
+      }
+
+      if (clickedConsultar) {
+        debugLog.push("  Clicked: Consultar Cartolas");
+        await delay(5000);
+        await doSave(page, "06-consultar-cartolas");
+
+        const MONTH_NAMES = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
+          "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+        const now = new Date();
+
+        for (let m = 0; m < months; m++) {
+          const target = new Date(now.getFullYear(), now.getMonth() - m, 1);
+          const targetMonth = target.getMonth(); // 0-based
+          const targetYear = target.getFullYear();
+          debugLog.push(`  Cartola: ${MONTH_NAMES[targetMonth]} ${targetYear}`);
+          progress(`Cartola ${MONTH_NAMES[targetMonth]} ${targetYear}...`);
+
+          // Try to select month/year in dropdowns (check all frames)
+          const frames = [page.mainFrame(), ...page.frames().filter((f) => f !== page.mainFrame())];
+          let submitted = false;
+
+          // Debug: list frames and their select counts
+          for (const frame of frames) {
+            try {
+              const info = await frame.evaluate(() => {
+                const selects = document.querySelectorAll("select");
+                const inputs = document.querySelectorAll("input");
+                const buttons = document.querySelectorAll("button, input[type='submit'], input[type='button'], input[type='image']");
+                return { url: window.location.href, selects: selects.length, inputs: inputs.length, buttons: buttons.length };
+              });
+              debugLog.push(`    Frame: ${info.url.substring(0, 80)} | selects=${info.selects} inputs=${info.inputs} buttons=${info.buttons}`);
+            } catch { /* detached */ }
+          }
+
+          for (const frame of frames) {
+            try {
+              // Debug: dump select options
+              const selectDebug = await frame.evaluate(() => {
+                const selects = Array.from(document.querySelectorAll("select")) as HTMLSelectElement[];
+                return selects.map((sel, i) => ({
+                  index: i, name: sel.name || sel.id,
+                  options: Array.from(sel.options).map(o => ({ text: o.text.trim(), value: o.value })),
+                }));
+              }).catch(() => []);
+              if (selectDebug.length > 0) {
+                if (selectDebug.length > 0) debugLog.push(`    Frame has ${selectDebug.length} selects`);
+              }
+
+              const filled = await frame.evaluate((monthIdx: number, year: number) => {
+                const selects = Array.from(document.querySelectorAll("select")) as HTMLSelectElement[];
+                if (selects.length < 1) return "no selects";
+
+                // Use first two selects directly (month, year)
+                const monthSelect = selects[0];
+                const yearSelect = selects.length >= 2 ? selects[1] : null;
+                if (!yearSelect) return "only 1 select";
+
+                // Set month by value (01-12)
+                const monthValue = String(monthIdx + 1).padStart(2, "0");
+                monthSelect.value = monthValue;
+                monthSelect.dispatchEvent(new Event("change", { bubbles: true }));
+
+                // Set year
+                yearSelect.value = String(year);
+                yearSelect.dispatchEvent(new Event("change", { bubbles: true }));
+
+                return "ok";
+              }, targetMonth, targetYear);
+
+              debugLog.push(`    Fill result: ${filled}`);
+              if (filled !== "ok") continue;
+
+              await delay(500);
+
+              // Click "Aceptar" (could be button, submit, or image input)
+              const accepted = await frame.evaluate(() => {
+                for (const el of document.querySelectorAll('button, input[type="submit"], input[type="button"], input[type="image"], a, img')) {
+                  const text = ((el as HTMLElement).innerText?.trim() || (el as HTMLInputElement).value || (el as HTMLInputElement).alt || "").toLowerCase();
+                  if (text.includes("aceptar") || text === "buscar" || text === "consultar" || text === "enviar") {
+                    (el as HTMLElement).click(); return text;
+                  }
+                }
+                // Last resort: click any submit-like element
+                const submit = document.querySelector('input[type="submit"], input[type="image"]') as HTMLElement;
+                if (submit) { submit.click(); return "submit-fallback"; }
+                return null;
+              });
+              debugLog.push(`    Accepted: ${accepted}`);
+
+              if (accepted) {
+                debugLog.push(`    Submitted: ${MONTH_NAMES[targetMonth]} ${targetYear}`);
+                await delay(8000);
+
+                // Wait for table to load
+                const waitStart = Date.now();
+                while (Date.now() - waitStart < 15000) {
+                  const hasContent = await frame.evaluate(() => {
+                    const tables = document.querySelectorAll("table");
+                    for (const t of Array.from(tables)) { if (t.querySelectorAll("tr").length > 2) return true; }
+                    return false;
+                  }).catch(() => false);
+                  if (hasContent) break;
+                  await delay(2000);
+                }
+
+                await doSave(page, `07-cartola-${MONTH_NAMES[targetMonth]}-${targetYear}`);
+
+                // Extract from this frame
+                const periodMovements = await extractMovements(page);
+                debugLog.push(`    Found: ${periodMovements.length} movements`);
+                movements.push(...periodMovements);
+                submitted = true;
+                break;
+              }
+            } catch { /* detached frame */ }
+          }
+
+          if (!submitted) {
+            debugLog.push(`    Could not submit cartola for ${MONTH_NAMES[targetMonth]} ${targetYear}`);
+            break;
+          }
+        }
+      } else {
+        debugLog.push("  Could not click Consultar Cartolas");
+      }
+    } else {
+      debugLog.push("  Could not navigate to Cartolas");
     }
   }
 
