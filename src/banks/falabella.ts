@@ -5,7 +5,7 @@ import XLSX from "xlsx";
 import type { Page } from "puppeteer-core";
 import type { BankMovement, BankScraper, CardOwner, CreditCardBalance, MovementSource, ScrapeResult, ScraperOptions } from "../types.js";
 import { MOVEMENT_SOURCE } from "../types.js";
-import { closePopups, delay, deduplicateMovements, normalizeDate, normalizeOwner, normalizeInstallments, parseChileanAmount } from "../utils.js";
+import { closePopups, delay, deduplicateMovements, deduplicateAcrossSources, monthYearLabel, normalizeDate, normalizeOwner, normalizeInstallments, parseChileanAmount } from "../utils.js";
 import { runScraper } from "../infrastructure/scraper-runner.js";
 import type { BrowserSession } from "../infrastructure/browser.js";
 import { fillRut, fillPassword, clickSubmit } from "../actions/login.js";
@@ -32,6 +32,14 @@ const CMR_MOVEMENTS_TIMEOUT_MS = 30000;
 
 // ─── Excel parsing ───────────────────────────────────────────────
 
+function deriveInstallments(pending: number, monto: number, valorCuota: number): string {
+  if (pending === 0) return "01/01";
+  // ceil: interest plans have monto < valorCuota×total (fractional ratio → round up)
+  const total = valorCuota > 0 ? Math.ceil(monto / valorCuota) : 1;
+  const current = Math.max(1, total - pending);
+  return `${String(current).padStart(2, "0")}/${String(total).padStart(2, "0")}`;
+}
+
 function excelSerialToDate(serial: number): string {
   const d = XLSX.SSF.parse_date_code(serial);
   if (!d) return "pendiente";
@@ -57,8 +65,11 @@ function parseExcelMovements(filePath: string, source: MovementSource, debugLog:
       const dateRaw = row[0];
       const description = String(row[1] ?? "").trim();
       const ownerRaw = String(row[2] ?? "").trim();
-      const monto = Number(row[3]) || 0;
+      const monto = typeof row[3] === "number" ? row[3] : parseChileanAmount(String(row[3] ?? ""));
       const cuotasPendientes = Number(row[4]) || 0;
+      // VALOR CUOTA is negative for credits/payments, positive for purchases.
+      // Cells may arrive as numbers or as currency strings ("-$1.769.390").
+      const valorCuota = typeof row[5] === "number" ? row[5] : parseChileanAmount(String(row[5] ?? ""));
 
       if (!description || monto === 0) continue;
 
@@ -67,14 +78,16 @@ function parseExcelMovements(filePath: string, source: MovementSource, debugLog:
           ? excelSerialToDate(dateRaw)
           : normalizeDate(String(dateRaw));
 
+      // VALOR CUOTA is the installment amount billed this period (negative for payments).
+      const amount = -valorCuota;
       movements.push({
         date,
         description,
-        amount: -monto,
+        amount,
         balance: 0,
         source,
         owner: normalizeOwner(ownerRaw),
-        installments: cuotasPendientes === 0 ? "01/01" : undefined,
+        installments: deriveInstallments(cuotasPendientes, Math.abs(monto), Math.abs(valorCuota)),
       });
     }
     return movements;
@@ -818,25 +831,6 @@ async function clickNavTarget(page: Page, debugLog: string[]): Promise<boolean> 
   return false;
 }
 
-// ─── Cross-source deduplication ───────────────────────────────────
-
-/**
- * When the same movement (date + description + amount + installments) appears in
- * both credit_card_unbilled and credit_card_billed, the billed version wins.
- * This handles DOM fallback cases where the paginator may read stale tab data.
- */
-function deduplicateAcrossSources(movements: BankMovement[]): BankMovement[] {
-  const key = (m: BankMovement) => `${m.date}|${m.description}|${m.amount}|${m.installments ?? ""}|${m.owner ?? ""}`;
-  const billedKeys = new Set(
-    movements
-      .filter((m) => m.source === MOVEMENT_SOURCE.credit_card_billed)
-      .map(key),
-  );
-  return movements.filter((m) =>
-    m.source !== MOVEMENT_SOURCE.credit_card_unbilled || !billedKeys.has(key(m)),
-  );
-}
-
 // ─── Main scrape function ─────────────────────────────────────────
 
 async function scrapeFalabella(session: BrowserSession, options: ScraperOptions): Promise<ScrapeResult> {
@@ -1062,13 +1056,15 @@ async function scrapeFalabella(session: BrowserSession, options: ScraperOptions)
       // Extract lastStatement fields (billing date, billed amount, due date, minimum payment)
       const billedInfo = await extractBilledStatementInfo(page);
       if (billedInfo.billingDate && billedInfo.billedAmount && billedInfo.dueDate) {
+        const billingDate = normalizeDate(billedInfo.billingDate);
         creditCardData.lastStatement = {
-          billingDate: normalizeDate(billedInfo.billingDate),
+          billingDate,
           billedAmount: billedInfo.billedAmount,
           dueDate: normalizeDate(billedInfo.dueDate),
           minimumPayment: billedInfo.minimumPayment,
         };
-        debugLog.push(`  lastStatement: facturado=${creditCardData.lastStatement.billingDate}, monto=$${billedInfo.billedAmount}, vence=${creditCardData.lastStatement.dueDate}, minimo=$${billedInfo.minimumPayment}`);
+        creditCardData.billingPeriod = monthYearLabel(billingDate);
+        debugLog.push(`  lastStatement: facturado=${billingDate}, monto=$${billedInfo.billedAmount}, vence=${creditCardData.lastStatement.dueDate}, minimo=$${billedInfo.minimumPayment}`);
       }
 
       const excelPathBilled = await downloadCmrExcel(page, downloadDir, debugLog);
