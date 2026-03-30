@@ -2,7 +2,7 @@ import * as fs from "fs";
 import * as path from "path";
 import type { Page } from "puppeteer-core";
 import type { BankMovement, CardOwner } from "./types.js";
-import { CARD_OWNER } from "./types.js";
+import { CARD_OWNER, MOVEMENT_SOURCE } from "./types.js";
 
 /** Formatea un RUT chileno (ej: "123456789" → "12.345.678-9") */
 export function formatRut(rut: string): string {
@@ -87,11 +87,25 @@ export async function closePopups(page: Page): Promise<void> {
 
 // ─── Parsing ──────────────────────────────────────────────────
 
-/** Mapa de meses en español a número */
+/** Mapa de meses en español a número (abreviatura) */
 export const MONTHS_MAP: Record<string, string> = {
   ene: "01", feb: "02", mar: "03", abr: "04", may: "05", jun: "06",
   jul: "07", ago: "08", sep: "09", oct: "10", nov: "11", dic: "12",
 };
+
+/** Nombres de meses en español indexados por número (1–12) */
+export const MONTH_NAMES = ["", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+
+// Reverse map for O(1) lookup: "abril" → 4
+const MONTH_NAME_TO_IDX: Record<string, number> = Object.fromEntries(
+  MONTH_NAMES.slice(1).map((name, i) => [name.toLowerCase(), i + 1]),
+);
+
+export function monthYearLabel(normalizedDate: string): string {
+  const [, mm, yyyy] = normalizedDate.split("-");
+  const month = MONTH_NAMES[parseInt(mm, 10)];
+  return month ? `${month} ${yyyy}` : `${mm} ${yyyy}`;
+}
 
 /**
  * Parsea un monto en formato chileno a número entero.
@@ -131,6 +145,16 @@ export function normalizeDate(raw: string): string {
     const day = shortMatch[1].padStart(2, "0");
     const month = shortMatch[2].padStart(2, "0");
     return `${day}-${month}-${new Date().getFullYear()}`;
+  }
+
+  // "21 de abril 2026" or "21 de abril" (nombre completo con "de")
+  const deMatch = value.match(/^(\d{1,2})\s+de\s+(\w+)(?:\s+(\d{4}))?$/i);
+  if (deMatch) {
+    const monthIdx = MONTH_NAME_TO_IDX[deMatch[2].toLowerCase()] ?? 0;
+    if (monthIdx > 0) {
+      const year = deMatch[3] ?? String(new Date().getFullYear());
+      return `${deMatch[1].padStart(2, "0")}-${String(monthIdx).padStart(2, "0")}-${year}`;
+    }
   }
 
   // "9 mar 2026" (día mes_texto año)
@@ -184,6 +208,21 @@ export function deduplicateMovements(movements: BankMovement[]): BankMovement[] 
     seen.add(key);
     return true;
   });
+}
+
+/**
+ * Cuando el mismo movimiento aparece en credit_card_unbilled y credit_card_billed,
+ * la versión facturada (billed) prevalece.
+ * Key: fecha + descripción + monto + cuotas + titular.
+ */
+export function deduplicateAcrossSources(movements: BankMovement[]): BankMovement[] {
+  const key = (m: BankMovement) => `${m.date}|${m.description}|${m.amount}|${m.installments ?? ""}|${m.owner ?? ""}`;
+  const billedKeys = new Set(
+    movements.filter((m) => m.source === MOVEMENT_SOURCE.credit_card_billed).map(key),
+  );
+  return movements.filter((m) =>
+    m.source !== MOVEMENT_SOURCE.credit_card_unbilled || !billedKeys.has(key(m)),
+  );
 }
 
 // ─── Spinner ──────────────────────────────────────────────────
