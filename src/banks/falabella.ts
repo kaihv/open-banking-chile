@@ -633,13 +633,18 @@ async function paginateInvoicedMovements(page: Page, debugLog: string[]): Promis
       );
       // Include "fecha de compra", "monto total", and "cuota a pagar" tables
       // ("pendientes de confirmación" uses "cuota a pagar" header — include it too)
+      function isVisible(t: HTMLTableElement): boolean {
+        const r = t.getBoundingClientRect();
+        return r.width > 0 || r.height > 0;
+      }
       const matchingTables = allTables.filter((t) => {
+        if (!isVisible(t)) return false;
         const hdr = (t.querySelector("thead, tr:first-child") as HTMLElement | null)?.innerText?.toLowerCase() ?? "";
         return hdr.includes("fecha de compra") || hdr.includes("monto total") || hdr.includes("cuota a pagar");
       });
       const tablesToExtract = matchingTables.length > 0
         ? matchingTables
-        : allTables.filter((t) => !t.closest("app-last-movements"));
+        : allTables.filter((t) => isVisible(t) && !t.closest("app-last-movements"));
 
       const rows: BankMovement[] = [];
       for (const table of tablesToExtract) {
@@ -698,10 +703,20 @@ async function paginateInvoicedMovements(page: Page, debugLog: string[]): Promis
 
       // ── 3. First dated row (for change detection after click) ──────────────
       function findFirstDatedRow(): string {
+        // Prefer "fecha de compra" table — "pendientes de confirmación" rows don't change across pages
         for (const r of roots) {
           for (const tbl of Array.from((r as Element).querySelectorAll<HTMLTableElement>("table"))) {
             const hdr = (tbl.querySelector("thead, tr:first-child") as HTMLElement | null)?.innerText?.toLowerCase() ?? "";
             if (!hdr.includes("fecha de compra")) continue;
+            const cells = tbl.querySelectorAll("tbody tr:first-child td");
+            if (cells.length > 0)
+              return Array.from(cells).map((c) => (c as HTMLElement).innerText?.trim()).join("|");
+          }
+        }
+        // Fallback: first visible table with data rows
+        for (const r of roots) {
+          for (const tbl of Array.from((r as Element).querySelectorAll<HTMLTableElement>("table"))) {
+            if (!isVisible(tbl)) continue;
             const cells = tbl.querySelectorAll("tbody tr:first-child td");
             if (cells.length > 0)
               return Array.from(cells).map((c) => (c as HTMLElement).innerText?.trim()).join("|");
@@ -740,31 +755,58 @@ async function paginateInvoicedMovements(page: Page, debugLog: string[]): Promis
       break;
     }
 
-    const changed = await page.waitForFunction((host: string, prevRow: string) => {
-      const shadowEl = document.querySelector(host);
-      const topRoot = shadowEl?.shadowRoot;
-      if (!topRoot) return false;
-      function collectAll(root: ShadowRoot | Element): Array<ShadowRoot | Element> {
-        const found: Array<ShadowRoot | Element> = [root];
-        for (const el of Array.from((root as Element).querySelectorAll("*"))) {
-          const sr = (el as Element & { shadowRoot?: ShadowRoot }).shadowRoot;
-          if (sr) found.push(...collectAll(sr));
+    const changed = await page.waitForFunction(
+      (host: string, prevRow: string, prevIndicator: string) => {
+        const shadowEl = document.querySelector(host);
+        const topRoot = shadowEl?.shadowRoot;
+        if (!topRoot) return false;
+        function collectAll(root: ShadowRoot | Element): Array<ShadowRoot | Element> {
+          const found: Array<ShadowRoot | Element> = [root];
+          for (const el of Array.from((root as Element).querySelectorAll("*"))) {
+            const sr = (el as Element & { shadowRoot?: ShadowRoot }).shadowRoot;
+            if (sr) found.push(...collectAll(sr));
+          }
+          return found;
         }
-        return found;
-      }
-      for (const r of collectAll(topRoot)) {
-        for (const tbl of Array.from((r as Element).querySelectorAll<HTMLTableElement>("table"))) {
-          const hdr = (tbl.querySelector("thead, tr:first-child") as HTMLElement | null)?.innerText?.toLowerCase() ?? "";
-          if (!hdr.includes("fecha de compra")) continue;
-          const cells = tbl.querySelectorAll("tbody tr:first-child td");
-          if (cells.length > 0) {
-            const sig = Array.from(cells).map((c) => (c as HTMLElement).innerText?.trim()).join("|");
-            return sig !== prevRow && sig !== "";
+        const allRoots = collectAll(topRoot);
+        // Signal 1: page indicator changed (most reliable — avoids row-content false negatives)
+        if (prevIndicator) {
+          for (const r of allRoots) {
+            for (const span of Array.from((r as Element).querySelectorAll<HTMLElement>("span.m-2, span[class*='m-']"))) {
+              const t = span.innerText?.trim() || "";
+              if (/^\d+$/.test(t) && t !== prevIndicator) return true;
+            }
           }
         }
-      }
-      return false;
-    }, { timeout: PAGE_CHANGE_TIMEOUT_MS }, SHADOW_HOST, result.firstDatedRow).then(() => true, () => false);
+        function rowSig(tbl: HTMLTableElement): string {
+          const cells = tbl.querySelectorAll("tbody tr:first-child td");
+          return cells.length > 0 ? Array.from(cells).map((c) => (c as HTMLElement).innerText?.trim()).join("|") : "";
+        }
+        // Signal 2: "fecha de compra" table first row changed
+        for (const r of allRoots) {
+          for (const tbl of Array.from((r as Element).querySelectorAll<HTMLTableElement>("table"))) {
+            const hdr = (tbl.querySelector("thead, tr:first-child") as HTMLElement | null)?.innerText?.toLowerCase() ?? "";
+            if (!hdr.includes("fecha de compra")) continue;
+            const sig = rowSig(tbl);
+            if (sig) return sig !== prevRow;
+          }
+        }
+        // Signal 3: any visible table first row changed
+        for (const r of allRoots) {
+          for (const tbl of Array.from((r as Element).querySelectorAll<HTMLTableElement>("table"))) {
+            const rect = tbl.getBoundingClientRect();
+            if (rect.width === 0 && rect.height === 0) continue;
+            const sig = rowSig(tbl);
+            if (sig) return sig !== prevRow;
+          }
+        }
+        return false;
+      },
+      { timeout: PAGE_CHANGE_TIMEOUT_MS },
+      SHADOW_HOST,
+      result.firstDatedRow,
+      result.pageIndicator,
+    ).then(() => true, () => false);
     if (!changed) { debugLog.push(`  [inv pag] table content unchanged after next click, stopping`); break; }
     await delay(300);
 
