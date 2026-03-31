@@ -337,7 +337,7 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
   progress("Ingresando RUT...");
   if (!(await fillRut(page, rut, LOGIN_SELECTORS))) {
     const ss = await page.screenshot({ encoding: "base64" });
-    return { success: false, bank, movements: [], error: "No se encontró campo de RUT", screenshot: ss as string, debug: debugLog.join("\n") };
+    return { success: false, bank, accounts: [], error: "No se encontró campo de RUT", screenshot: ss as string, debug: debugLog.join("\n") };
   }
   await delay(1000);
 
@@ -346,7 +346,7 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
   if (!passOk) { await page.keyboard.press("Enter"); await delay(3000); passOk = await fillPassword(page, password, LOGIN_SELECTORS); }
   if (!passOk) {
     const ss = await page.screenshot({ encoding: "base64" });
-    return { success: false, bank, movements: [], error: "No se encontró campo de clave", screenshot: ss as string, debug: debugLog.join("\n") };
+    return { success: false, bank, accounts: [], error: "No se encontró campo de clave", screenshot: ss as string, debug: debugLog.join("\n") };
   }
   await delay(800);
 
@@ -360,13 +360,13 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
   const pageContent = (await page.content()).toLowerCase();
   if (pageContent.includes("clave dinámica") || pageContent.includes("segundo factor") || pageContent.includes("código de verificación") || pageContent.includes("token")) {
     const ss = await page.screenshot({ encoding: "base64" });
-    return { success: false, bank, movements: [], error: "El banco pide clave dinámica o 2FA.", screenshot: ss as string, debug: debugLog.join("\n") };
+    return { success: false, bank, accounts: [], error: "El banco pide clave dinámica o 2FA.", screenshot: ss as string, debug: debugLog.join("\n") };
   }
 
   const loginError = await detectLoginError(page);
   if (loginError) {
     const ss = await page.screenshot({ encoding: "base64" });
-    return { success: false, bank, movements: [], error: `Error del banco: ${loginError}`, screenshot: ss as string, debug: debugLog.join("\n") };
+    return { success: false, bank, accounts: [], error: `Error del banco: ${loginError}`, screenshot: ss as string, debug: debugLog.join("\n") };
   }
 
   debugLog.push("6. Login OK!");
@@ -449,7 +449,7 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
   await doSave(page, "05-final");
   const ss = doScreenshots ? (await page.screenshot({ encoding: "base64", fullPage: true })) as string : undefined;
 
-  return { success: true, bank, movements: deduplicated, balance: balance ?? undefined, screenshot: ss, debug: debugLog.join("\n") };
+  return { success: true, bank, accounts: [{ balance: balance ?? undefined, movements: deduplicated }], screenshot: ss, debug: debugLog.join("\n") };
 }
 
 // ─── Export ──────────────────────────────────────────────────────

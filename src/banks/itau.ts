@@ -1,5 +1,5 @@
 import type { Page } from "puppeteer-core";
-import type { BankMovement, BankScraper, CreditCardBalance, ScrapeResult, ScraperOptions } from "../types.js";
+import type { AccountBalance, BankMovement, BankScraper, CreditCardBalance, ScrapeResult, ScraperOptions } from "../types.js";
 import { MOVEMENT_SOURCE } from "../types.js";
 import { closePopups, delay, formatRut, parseChileanAmount, normalizeDate, deduplicateMovements, normalizeInstallments } from "../utils.js";
 import { runScraper } from "../infrastructure/scraper-runner.js";
@@ -185,7 +185,7 @@ async function extractCreditCardData(page: Page, debugLog: string[]): Promise<{ 
   if (tcInfo.label) {
     const nacUsed = parseChileanAmount(tcInfo.nacUtilizado || "0");
     const nacAvailable = parseChileanAmount(tcInfo.nacDisponible || "0");
-    const card: CreditCardBalance = { label: tcInfo.label, national: { used: nacUsed, available: nacAvailable, total: nacUsed + nacAvailable } };
+    const card: CreditCardBalance = { label: tcInfo.label, national: { used: nacUsed, available: nacAvailable, total: nacUsed + nacAvailable }, movements: [] };
     if (tcInfo.intDisponible) {
       const parseUsd = (s: string) => parseFloat(s.replace(/\./g, "").replace(",", ".")) || 0;
       card.international = { used: Math.abs(parseUsd(tcInfo.intUtilizado || "0")), available: parseUsd(tcInfo.intDisponible || "0"), total: parseUsd(tcInfo.intTotal || "0"), currency: "USD" };
@@ -240,7 +240,7 @@ async function scrapeItau(session: BrowserSession, options: ScraperOptions): Pro
   progress("Abriendo sitio del banco...");
   const loginResult = await itauLogin(page, rut, password, debugLog, doSave);
   if (!loginResult.success) {
-    return { success: false, bank, movements: [], error: loginResult.error, screenshot: loginResult.screenshot, debug: debugLog.join("\n") };
+    return { success: false, bank, accounts: [], error: loginResult.error, screenshot: loginResult.screenshot, debug: debugLog.join("\n") };
   }
 
   progress("Sesión iniciada correctamente");
@@ -256,14 +256,15 @@ async function scrapeItau(session: BrowserSession, options: ScraperOptions): Pro
   progress("Extrayendo datos de tarjeta de crédito...");
   const tcResult = await extractCreditCardData(page, debugLog);
 
-  const deduplicated = deduplicateMovements([...accountMovements, ...tcResult.movements]);
+  const deduplicatedAccount = deduplicateMovements(accountMovements);
 
-  debugLog.push(`9. Total: ${deduplicated.length} unique movements`);
-  progress(`Listo — ${deduplicated.length} movimientos totales`);
+  debugLog.push(`9. Total: ${deduplicatedAccount.length} account movements`);
+  progress(`Listo — ${deduplicatedAccount.length} movimientos totales`);
   await doSave(page, "05-final");
   const ss = doScreenshots ? (await page.screenshot({ encoding: "base64" })) as string : undefined;
 
-  return { success: true, bank, movements: deduplicated, balance, creditCards: tcResult.creditCards.length > 0 ? tcResult.creditCards : undefined, screenshot: ss, debug: debugLog.join("\n") };
+  const accounts: AccountBalance[] = [{ balance, movements: deduplicatedAccount }];
+  return { success: true, bank, accounts, creditCards: tcResult.creditCards.length > 0 ? tcResult.creditCards : undefined, screenshot: ss, debug: debugLog.join("\n") };
 }
 
 // ─── Export ──────────────────────────────────────────────────────

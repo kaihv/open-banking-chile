@@ -28,7 +28,7 @@ export async function runScraper(
     return {
       success: false,
       bank: bankId,
-      movements: [],
+      accounts: [],
       error: "Debes proveer RUT y clave.",
     };
   }
@@ -46,7 +46,7 @@ export async function runScraper(
     return {
       success: false,
       bank: bankId,
-      movements: [],
+      accounts: [],
       error: `Error del scraper: ${error instanceof Error ? error.message : String(error)}`,
       debug: session?.debugLog.join("\n"),
     };

@@ -26,7 +26,7 @@ interface ApiNoFacturResponse { fechaProximaFacturacionCalendario: string; fecha
 interface ApiFechaFacturacion { fechaFacturacion: string; existeEstadoCuentaNacional: string; existeEstadoCuentaInternacional: string; }
 interface ApiTransaccionFacturada { fechaTransaccionString: string; montoTransaccion: number; descripcion: string; cuotas: string; grupo: string; }
 interface ApiResumenNested { montoFacturado?: number; pagoMinimo?: number; fechaFacturacionActual?: string; fechaVencimientoFacturacion?: string; fechaProximaFacturacion?: string; }
-interface ApiResumenFacturado { existeEstadoCuenta: boolean; seccionOperaciones?: { transaccionesTarjetas: ApiTransaccionFacturada[] }; resumen?: ApiResumenNested; totalFacturado?: number; montoTotalFacturado?: number; montoTotal?: number; fechaVencimiento?: string; fechaPago?: string; pagoMinimo?: number; montoMinimoPago?: number; montoMinimoAPagar?: number; }
+interface ApiResumenFacturado { existeEstadoCuenta: boolean; seccionOperaciones?: { transaccionesTarjetas: ApiTransaccionFacturada[] }; seccionCargosImpuestosAbonos?: { transaccionesTarjetas: ApiTransaccionFacturada[] | null }; resumen?: ApiResumenNested; totalFacturado?: number; montoTotalFacturado?: number; montoTotal?: number; fechaVencimiento?: string; fechaPago?: string; pagoMinimo?: number; montoMinimoPago?: number; montoMinimoAPagar?: number; }
 interface ApiCartolaMov { descripcion: string; monto: number; saldo: number; tipo: string; fechaContable: string; }
 type ApiCartolaResponse = { movimientos: ApiCartolaMov[]; pagina: Array<{ totalRegistros: number; masPaginas: boolean }> };
 
@@ -209,8 +209,8 @@ function cartolaMovToMovement(mov: ApiCartolaMov): BankMovement {
   return { date: normalizeDate(mov.fechaContable), description: mov.descripcion.trim(), amount: mov.tipo === "cargo" ? -Math.abs(mov.monto) : Math.abs(mov.monto), balance: mov.saldo, source: MOVEMENT_SOURCE.account };
 }
 
-function facturadoToMovement(tx: ApiTransaccionFacturada, source: MovementSource): BankMovement {
-  return { date: normalizeDate(tx.fechaTransaccionString), description: tx.descripcion.trim(), amount: tx.grupo === "pagos" ? Math.abs(tx.montoTransaccion) : -Math.abs(tx.montoTransaccion), balance: 0, source, installments: normalizeInstallments(tx.cuotas) };
+function facturadoToMovement(tx: ApiTransaccionFacturada, source: MovementSource, cardMask?: string): BankMovement {
+  return { date: normalizeDate(tx.fechaTransaccionString), description: tx.descripcion.trim(), amount: tx.grupo === "pagos" ? Math.abs(tx.montoTransaccion) : -Math.abs(tx.montoTransaccion), balance: 0, source, card: cardMask, installments: normalizeInstallments(tx.cuotas) };
 }
 
 async function fetchAccountMovements(page: Page, products: ApiProduct[], fullName: string, rut: string, debugLog: string[]): Promise<{ movements: BankMovement[]; balance?: number }> {
@@ -291,7 +291,7 @@ async function fetchCreditCardData(page: Page, fullName: string, debugLog: strin
       const unbilledMovs: BankMovement[] = [];
       for (const mov of nf.listaMovNoFactur) {
         const amount = mov.montoCompra < 0 ? Math.abs(mov.montoCompra) : -Math.abs(mov.montoCompra);
-        unbilledMovs.push({ date: normalizeDate(mov.fechaTransaccionString), description: mov.glosaTransaccion.trim(), amount, balance: 0, source: MOVEMENT_SOURCE.credit_card_unbilled, installments: normalizeInstallments(mov.despliegueCuotas) });
+        unbilledMovs.push({ date: normalizeDate(mov.fechaTransaccionString), description: mov.glosaTransaccion.trim(), amount, balance: 0, source: MOVEMENT_SOURCE.credit_card_unbilled, card: mascara, installments: normalizeInstallments(mov.despliegueCuotas) });
       }
       // periodExpenses: suma de cargos no facturados (montos negativos → gastos)
       const periodExpensesRaw = nf.gastosPeriodo ?? nf.montoGastosPeriodo;
@@ -318,9 +318,15 @@ async function fetchCreditCardData(page: Page, fullName: string, debugLog: strin
             if (r.status !== "fulfilled" || !r.value.existeEstadoCuenta) continue;
             const res = r.value;
 
-            for (const tx of res.seccionOperaciones?.transaccionesTarjetas ?? []) {
-              if (tx.grupo === "totales") continue;
-              movements.push(facturadoToMovement(tx, MOVEMENT_SOURCE.credit_card_billed));
+            const allTx = [
+              ...(res.seccionOperaciones?.transaccionesTarjetas ?? []),
+              ...(res.seccionCargosImpuestosAbonos?.transaccionesTarjetas ?? []),
+            ];
+            for (const tx of allTx) {
+              // Skip section-subtotal rows (e.g. "TOTAL PAGOS A LA CUENTA").
+              const desc = tx.descripcion.trim().toUpperCase();
+              if (desc.startsWith("TOTAL ") && desc.endsWith("A LA CUENTA")) continue;
+              movements.push(facturadoToMovement(tx, MOVEMENT_SOURCE.credit_card_billed, mascara));
             }
 
             // Override nextBillingDate/nextDueDate with accurate date-format values from resumen
@@ -364,7 +370,7 @@ async function scrapeBchile(session: BrowserSession, options: ScraperOptions): P
   progress("Abriendo sitio del banco...");
   const loginResult = await bchileLogin(page, rut, password, debugLog, doSave);
   if (!loginResult.success) {
-    return { success: false, bank, movements: [], error: loginResult.error, screenshot: loginResult.screenshot, debug: debugLog.join("\n") };
+    return { success: false, bank, accounts: [], error: loginResult.error, screenshot: loginResult.screenshot, debug: debugLog.join("\n") };
   }
 
   progress("Sesión iniciada correctamente");
@@ -395,7 +401,7 @@ async function scrapeBchile(session: BrowserSession, options: ScraperOptions): P
     debugLog.push(`  Found ${products.productos.length} products`);
   } catch (err) {
     const ss = await page.screenshot({ encoding: "base64" });
-    return { success: false, bank, movements: [], error: `No se pudo obtener datos: ${err instanceof Error ? err.message : String(err)}`, screenshot: ss as string, debug: debugLog.join("\n") };
+    return { success: false, bank, accounts: [], error: `No se pudo obtener datos: ${err instanceof Error ? err.message : String(err)}`, screenshot: ss as string, debug: debugLog.join("\n") };
   }
 
   // Balance
@@ -421,14 +427,30 @@ async function scrapeBchile(session: BrowserSession, options: ScraperOptions): P
   const tcResult = await fetchCreditCardData(page, fullName, debugLog);
   debugLog.push(`  TC movements: ${tcResult.movements.length}`);
 
-  const deduplicated = deduplicateMovements(deduplicateAcrossSources([...acctResult.movements, ...tcResult.movements]));
-  debugLog.push(`8. Total: ${deduplicated.length} unique movements`);
-  progress(`Listo — ${deduplicated.length} movimientos totales`);
+  // Distribute TC movements into each card's movements array
+  for (const cc of tcResult.creditCards) {
+    const mask = cc.label.match(/\*{4}\d{4}/)?.[0];
+    const cardMovs = mask
+      ? tcResult.movements.filter(m => m.card === mask)
+      : tcResult.movements;
+    cc.movements = deduplicateMovements(deduplicateAcrossSources(cardMovs));
+  }
+
+  const totalTc = tcResult.creditCards.reduce((s, cc) => s + (cc.movements?.length ?? 0), 0);
+  debugLog.push(`8. Total: ${acctResult.movements.length} account + ${totalTc} TC movements`);
+  progress(`Listo — ${acctResult.movements.length + totalTc} movimientos totales`);
 
   await doSave(page, "06-final");
   const ss = doScreenshots ? await page.screenshot({ encoding: "base64" }) as string : undefined;
 
-  return { success: true, bank, movements: deduplicated, balance, creditCards: tcResult.creditCards.length > 0 ? tcResult.creditCards : undefined, screenshot: ss, debug: debugLog.join("\n") };
+  return {
+    success: true,
+    bank,
+    accounts: [{ balance, movements: deduplicateMovements(acctResult.movements) }],
+    creditCards: tcResult.creditCards.length > 0 ? tcResult.creditCards : undefined,
+    screenshot: ss,
+    debug: debugLog.join("\n"),
+  };
 }
 
 // ─── Export ──────────────────────────────────────────────────────

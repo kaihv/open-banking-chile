@@ -887,7 +887,7 @@ async function scrapeFalabella(session: BrowserSession, options: ScraperOptions)
     progress("Ingresando RUT...");
     if (!(await fillRut(page, rut))) {
       const ss = await page.screenshot({ encoding: "base64" });
-      return { success: false, bank, movements: [], error: "No se encontró campo de RUT", screenshot: ss as string, debug: debugLog.join("\n") };
+      return { success: false, bank, accounts: [], error: "No se encontró campo de RUT", screenshot: ss as string, debug: debugLog.join("\n") };
     }
     await delay(1500);
 
@@ -910,7 +910,7 @@ async function scrapeFalabella(session: BrowserSession, options: ScraperOptions)
     const passOk = await fillPassword(page, password);
     if (!passOk) {
       const ss = await page.screenshot({ encoding: "base64" });
-      return { success: false, bank, movements: [], error: "No se encontró campo de clave", screenshot: ss as string, debug: debugLog.join("\n") };
+      return { success: false, bank, accounts: [], error: "No se encontró campo de clave", screenshot: ss as string, debug: debugLog.join("\n") };
     }
     await delay(1000);
 
@@ -924,7 +924,7 @@ async function scrapeFalabella(session: BrowserSession, options: ScraperOptions)
     const pageContent = (await page.content()).toLowerCase();
     if (pageContent.includes("clave dinámica") || pageContent.includes("segundo factor")) {
       const ss = await page.screenshot({ encoding: "base64" });
-      return { success: false, bank, movements: [], error: "El banco pide clave dinámica (2FA).", screenshot: ss as string, debug: debugLog.join("\n") };
+      return { success: false, bank, accounts: [], error: "El banco pide clave dinámica (2FA).", screenshot: ss as string, debug: debugLog.join("\n") };
     }
 
     // Login error check
@@ -935,7 +935,7 @@ async function scrapeFalabella(session: BrowserSession, options: ScraperOptions)
     });
     if (errorCheck) {
       const ss = await page.screenshot({ encoding: "base64" });
-      return { success: false, bank, movements: [], error: `Error del banco: ${errorCheck}`, screenshot: ss as string, debug: debugLog.join("\n") };
+      return { success: false, bank, accounts: [], error: `Error del banco: ${errorCheck}`, screenshot: ss as string, debug: debugLog.join("\n") };
     }
 
     debugLog.push("6. Login OK!");
@@ -1097,13 +1097,14 @@ async function scrapeFalabella(session: BrowserSession, options: ScraperOptions)
     // The key billing fields (billingDate, billedAmount, dueDate, minimumPayment) are extracted
     // directly from the "movimientos facturados" tab HTML above.
 
-    const tcMovements = deduplicateAcrossSources(
-      deduplicateMovements([...unbilledMovements, ...billedMovements]),
+    const cardMask = creditCardData.label.match(/\*{4}\d{4}/)?.[0];
+    const withCard = (ms: BankMovement[]) => cardMask ? ms.map(m => ({ ...m, card: cardMask })) : ms;
+    creditCardData.movements = deduplicateAcrossSources(
+      deduplicateMovements([...withCard(unbilledMovements), ...withCard(billedMovements)]),
     );
-    const allMovements = deduplicateMovements([...accountMovements, ...tcMovements]);
 
-    debugLog.push(`14. Total movements: ${allMovements.length} (account: ${accountMovements.length}, TC: ${tcMovements.length})`);
-    progress(`Listo — ${allMovements.length} movimientos totales`);
+    debugLog.push(`14. Total: ${accountMovements.length} account + ${creditCardData.movements.length} TC movements`);
+    progress(`Listo — ${accountMovements.length + creditCardData.movements.length} movimientos totales`);
 
     await doSave(page, "08-final");
     const ss = doScreenshots ? (await page.screenshot({ encoding: "base64", fullPage: true })) as string : undefined;
@@ -1111,8 +1112,7 @@ async function scrapeFalabella(session: BrowserSession, options: ScraperOptions)
     return {
       success: true,
       bank,
-      movements: allMovements,
-      balance,
+      accounts: [{ balance, movements: deduplicateMovements(accountMovements) }],
       creditCards: [creditCardData],
       screenshot: ss,
       debug: debugLog.join("\n"),

@@ -127,7 +127,7 @@ async function scrapeEdwards(session: BrowserSession, options: ScraperOptions): 
   progress("Ingresando RUT...");
   if (!(await fillRut(loginCtx as unknown as Page, rut))) {
     const ss = await page.screenshot({ encoding: "base64" });
-    return { success: false, bank, movements: [], error: "No se encontró campo de RUT", screenshot: ss as string, debug: debugLog.join("\n") };
+    return { success: false, bank, accounts: [], error: "No se encontró campo de RUT", screenshot: ss as string, debug: debugLog.join("\n") };
   }
   await delay(1500);
 
@@ -136,7 +136,7 @@ async function scrapeEdwards(session: BrowserSession, options: ScraperOptions): 
   if (!passOk) { await page.keyboard.press("Enter"); await delay(3000); passOk = await fillPassword(page, password); }
   if (!passOk) {
     const ss = await page.screenshot({ encoding: "base64" });
-    return { success: false, bank, movements: [], error: "No se encontró campo de clave", screenshot: ss as string, debug: debugLog.join("\n") };
+    return { success: false, bank, accounts: [], error: "No se encontró campo de clave", screenshot: ss as string, debug: debugLog.join("\n") };
   }
   await delay(1000);
 
@@ -150,7 +150,7 @@ async function scrapeEdwards(session: BrowserSession, options: ScraperOptions): 
   const loginError = await detectLoginError(page);
   if (loginError) {
     const ss = await page.screenshot({ encoding: "base64" });
-    return { success: false, bank, movements: [], error: `Error del banco: ${loginError}`, screenshot: ss as string, debug: debugLog.join("\n") };
+    return { success: false, bank, accounts: [], error: `Error del banco: ${loginError}`, screenshot: ss as string, debug: debugLog.join("\n") };
   }
 
   debugLog.push("5. Login OK!");
@@ -226,7 +226,7 @@ async function scrapeEdwards(session: BrowserSession, options: ScraperOptions): 
   await doSave(page, "04-final");
   const ss = doScreenshots ? (await page.screenshot({ encoding: "base64", fullPage: true })) as string : undefined;
 
-  return { success: true, bank, movements, balance: balance || undefined, screenshot: ss, debug: debugLog.join("\n") };
+  return { success: true, bank, accounts: [{ balance: balance || undefined, movements }], screenshot: ss, debug: debugLog.join("\n") };
 }
 
 // ─── Export ──────────────────────────────────────────────────────

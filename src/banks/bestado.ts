@@ -226,14 +226,14 @@ async function scrapeBestado(
   progress("Ingresando RUT...");
   if (!(await fillRut(page, rut))) {
     const ss = await page.screenshot({ encoding: "base64" });
-    return { success: false, bank, movements: [], error: "No se pudo llenar el RUT", screenshot: ss as string, debug: debugLog.join("\n") };
+    return { success: false, bank, accounts: [], error: "No se pudo llenar el RUT", screenshot: ss as string, debug: debugLog.join("\n") };
   }
 
   debugLog.push("4. Filling password...");
   progress("Ingresando clave...");
   if (!(await fillPassword(page, password))) {
     const ss = await page.screenshot({ encoding: "base64" });
-    return { success: false, bank, movements: [], error: "No se pudo llenar la clave", screenshot: ss as string, debug: debugLog.join("\n") };
+    return { success: false, bank, accounts: [], error: "No se pudo llenar la clave", screenshot: ss as string, debug: debugLog.join("\n") };
   }
   await doSave(page, "03-credentials");
 
@@ -267,7 +267,7 @@ async function scrapeBestado(
   });
   if (loginError) {
     const ss = await page.screenshot({ encoding: "base64" });
-    return { success: false, bank, movements: [], error: `Login fallido: ${loginError}`, screenshot: ss as string, debug: debugLog.join("\n") };
+    return { success: false, bank, accounts: [], error: `Login fallido: ${loginError}`, screenshot: ss as string, debug: debugLog.join("\n") };
   }
 
   // Dismiss promo modals
@@ -355,7 +355,7 @@ async function scrapeBestado(
   await doSave(page, "07-final");
   const ss = doScreenshots ? await page.screenshot({ encoding: "base64" }) as string : undefined;
 
-  return { success: true, bank, movements: deduplicated, balance, screenshot: ss, debug: debugLog.join("\n") };
+  return { success: true, bank, accounts: [{ balance, movements: deduplicated }], screenshot: ss, debug: debugLog.join("\n") };
 }
 
 // ─── Export ──────────────────────────────────────────────────────

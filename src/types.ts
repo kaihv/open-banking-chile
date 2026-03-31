@@ -29,10 +29,22 @@ export interface BankMovement {
   source: MovementSource;
   /** Titular o adicional de la tarjeta */
   owner?: CardOwner;
+  /** Identificador de la tarjeta (ej: "****8335") — útil cuando hay múltiples tarjetas */
+  card?: string;
   /** Cuotas (ej: "01/01", "02/06") */
   installments?: string;
   /** Monto total de la compra (distinto de amount cuando es en cuotas) */
   totalAmount?: number;
+}
+
+/** Saldo y movimientos de una cuenta bancaria */
+export interface AccountBalance {
+  /** Identificador de la cuenta (ej: "Cuenta Corriente ****2706") */
+  label?: string;
+  /** Saldo actual */
+  balance?: number;
+  /** Movimientos de la cuenta */
+  movements: BankMovement[];
 }
 
 /** Saldo de una tarjeta de crédito */
@@ -71,6 +83,8 @@ export interface CreditCardBalance {
     /** Pago mínimo */
     minimumPayment?: number;
   };
+  /** Movimientos de la tarjeta */
+  movements?: BankMovement[];
 }
 
 /** Resultado del scraping */
@@ -79,12 +93,14 @@ export interface ScrapeResult {
   success: boolean;
   /** Nombre del banco */
   bank: string;
-  /** Lista de movimientos encontrados */
-  movements: BankMovement[];
-  /** Saldo actual de la cuenta */
-  balance?: number;
+  /** Cuentas bancarias con sus movimientos */
+  accounts?: AccountBalance[];
   /** Saldos de tarjetas de crédito */
   creditCards?: CreditCardBalance[];
+  /** @deprecated Use accounts[].movements instead. Kept for compatibility during migration. */
+  movements?: BankMovement[];
+  /** @deprecated Use accounts[].balance instead. Kept for compatibility during migration. */
+  balance?: number;
   /** Mensaje de error si success = false */
   error?: string;
   /** Screenshot en base64 (para debugging) */

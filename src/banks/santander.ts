@@ -212,7 +212,7 @@ async function scrapeSantander(
 
   if (!loginOpened) {
     const ss = await page.screenshot({ encoding: "base64" });
-    return { success: false, bank, movements: [], error: "No se encontró el botón de ingreso.", screenshot: ss as string, debug: debugLog.join("\n") };
+    return { success: false, bank, accounts: [], error: "No se encontró el botón de ingreso.", screenshot: ss as string, debug: debugLog.join("\n") };
   }
 
   await delay(3500);
@@ -231,7 +231,7 @@ async function scrapeSantander(
     await ctx.waitForSelector("#pass", { timeout: 15000 });
   } catch {
     const ss = await page.screenshot({ encoding: "base64" });
-    return { success: false, bank, movements: [], error: "No cargaron los campos de login (#rut/#pass).", screenshot: ss as string, debug: debugLog.join("\n") };
+    return { success: false, bank, accounts: [], error: "No cargaron los campos de login (#rut/#pass).", screenshot: ss as string, debug: debugLog.join("\n") };
   }
 
   // 3-5. Login
@@ -240,7 +240,7 @@ async function scrapeSantander(
   const rutOk = await fillRut(ctx, rut, LOGIN_SELECTORS);
   if (!rutOk) {
     const ss = await page.screenshot({ encoding: "base64" });
-    return { success: false, bank, movements: [], error: "No se encontró campo de RUT.", screenshot: ss as string, debug: debugLog.join("\n") };
+    return { success: false, bank, accounts: [], error: "No se encontró campo de RUT.", screenshot: ss as string, debug: debugLog.join("\n") };
   }
   await delay(3500);
 
@@ -248,7 +248,7 @@ async function scrapeSantander(
   const passOk = await fillPassword(ctx, password, LOGIN_SELECTORS);
   if (!passOk) {
     const ss = await page.screenshot({ encoding: "base64" });
-    return { success: false, bank, movements: [], error: "No se encontró campo de clave.", screenshot: ss as string, debug: debugLog.join("\n") };
+    return { success: false, bank, accounts: [], error: "No se encontró campo de clave.", screenshot: ss as string, debug: debugLog.join("\n") };
   }
   await delay(700);
 
@@ -264,7 +264,7 @@ async function scrapeSantander(
     await doSave(page, "03b-after-2fa");
     if (!approved) {
       const ss = await page.screenshot({ encoding: "base64" });
-      return { success: false, bank, movements: [], error: "Timeout esperando aprobación de 2FA.", screenshot: ss as string, debug: debugLog.join("\n") };
+      return { success: false, bank, accounts: [], error: "Timeout esperando aprobación de 2FA.", screenshot: ss as string, debug: debugLog.join("\n") };
     }
   }
 
@@ -272,7 +272,7 @@ async function scrapeSantander(
   const loginError = await detectLoginError(page, await getLoginFrame(page));
   if (loginError) {
     const ss = await page.screenshot({ encoding: "base64" });
-    return { success: false, bank, movements: [], error: `Error del banco: ${loginError}`, screenshot: ss as string, debug: debugLog.join("\n") };
+    return { success: false, bank, accounts: [], error: `Error del banco: ${loginError}`, screenshot: ss as string, debug: debugLog.join("\n") };
   }
 
   debugLog.push("6. Login OK.");
@@ -347,7 +347,7 @@ async function scrapeSantander(
   await doSave(page, "05-final");
   const ss = doScreenshots ? ((await page.screenshot({ encoding: "base64", fullPage: true })) as string) : undefined;
 
-  return { success: true, bank, movements, balance, screenshot: ss, debug: debugLog.join("\n") };
+  return { success: true, bank, accounts: [{ balance, movements }], screenshot: ss, debug: debugLog.join("\n") };
 }
 
 // ─── Export ──────────────────────────────────────────────────────────

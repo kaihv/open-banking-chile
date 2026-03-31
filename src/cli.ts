@@ -141,14 +141,18 @@ Ejemplos:
   }
 
   if (isTTY) {
-    const count = result.movements.length;
+    const accountCount = result.accounts?.reduce((sum, a) => sum + a.movements.length, 0) ?? 0;
+    const cardCount = result.creditCards?.reduce((sum, c) => sum + (c.movements?.length ?? 0), 0) ?? 0;
+    const count = accountCount + cardCount;
     spinner.stop(`${bank.name} — ${count} movimiento${count !== 1 ? "s" : ""} obtenido${count !== 1 ? "s" : ""}`);
   }
 
   const indent = flags.has("--pretty") ? 2 : undefined;
 
   if (flags.has("--movements")) {
-    console.log(JSON.stringify(result.movements, null, indent));
+    const accountMovements = result.accounts?.flatMap((a) => a.movements) ?? [];
+    const cardMovements = result.creditCards?.flatMap((c) => c.movements ?? []) ?? [];
+    console.log(JSON.stringify([...accountMovements, ...cardMovements], null, indent));
   } else {
     const { screenshot: _, ...output } = result;
     console.log(JSON.stringify(output, null, indent));

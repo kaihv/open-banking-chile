@@ -4,33 +4,41 @@ Scrapers open source para bancos chilenos. Obtén tus movimientos bancarios y sa
 
 > **Disclaimer**: Este proyecto no está afiliado con ningún banco. Úsalo bajo tu propia responsabilidad y solo con tus propias credenciales.
 
+## Migración v2 → v3
+
+**v3.0.0 introduce un cambio breaking en `ScrapeResult`:**
+
+Los movimientos ya no están en un array plano `result.movements` — ahora viven dentro de cada cuenta/tarjeta:
+
+| Antes (v2)               | Ahora (v3)                                  |
+| ------------------------ | ------------------------------------------- |
+| `result.movements`       | `result.accounts[i].movements`              |
+| `result.balance`         | `result.accounts[i].balance`                |
+| _(no existía)_           | `result.creditCards[i].movements`           |
+
+```ts
+// v2 (ya no válido)
+console.log(result.balance);
+for (const m of result.movements) { ... }
+
+// v3
+const cuenta = result.accounts?.[0];
+console.log(cuenta?.balance);
+for (const m of cuenta?.movements ?? []) { ... }
+
+// Movimientos de una tarjeta específica
+for (const card of result.creditCards ?? []) {
+  console.log(card.label, card.movements?.length);
+}
+```
+
+Los campos `movements` y `balance` en `ScrapeResult` se mantienen como `@deprecated` para compatibilidad temporal.
+
 ## Migración v1 → v2
 
 **v2.0.0 introduce un cambio breaking en la interfaz `BankMovement`:**
 
-El campo `source` ahora es **obligatorio** e indica el origen del movimiento:
-
-| Valor                    | Descripción                       |
-| ------------------------ | --------------------------------- |
-| `"account"`              | Cuenta corriente o vista          |
-| `"credit_card_unbilled"` | Tarjeta de crédito — por facturar |
-| `"credit_card_billed"`   | Tarjeta de crédito — facturado    |
-
-Si construyes objetos `BankMovement` manualmente en tu código, agrega el campo `source`. Si solo **consumes** los resultados del scraper, no hay cambios necesarios — todos los scrapers ya lo incluyen.
-
-```ts
-// v1 (ya no válido en TypeScript)
-const mov: BankMovement = { date, description, amount, balance };
-
-// v2
-const mov: BankMovement = {
-  date,
-  description,
-  amount,
-  balance,
-  source: "account",
-};
-```
+El campo `source` ahora es **obligatorio** e indica el origen del movimiento. Si construyes objetos `BankMovement` manualmente, agrega `source: "account"`. Si solo consumes resultados del scraper, no hay cambios necesarios.
 
 También en esta versión: utilidades compartidas (`parseChileanAmount`, `normalizeDate`, `deduplicateMovements`, etc.) disponibles como exports desde `open-banking-chile/utils`.
 
@@ -170,14 +178,23 @@ const result = await falabella.scrape({
 
 if (result.success) {
   console.log(`Banco: ${result.bank}`);
-  console.log(`Saldo: $${result.balance?.toLocaleString("es-CL")}`);
-  console.log(`${result.movements.length} movimientos`);
 
-  for (const m of result.movements) {
-    const sign = m.amount > 0 ? "+" : "";
-    console.log(
-      `${m.date} | ${m.description.padEnd(40)} | ${sign}$${m.amount.toLocaleString("es-CL")}`,
-    );
+  // Cuenta corriente
+  for (const account of result.accounts ?? []) {
+    console.log(`Saldo: $${account.balance?.toLocaleString("es-CL")}`);
+    for (const m of account.movements) {
+      const sign = m.amount > 0 ? "+" : "";
+      console.log(`${m.date} | ${m.description.padEnd(40)} | ${sign}$${m.amount.toLocaleString("es-CL")}`);
+    }
+  }
+
+  // Tarjetas de crédito
+  for (const card of result.creditCards ?? []) {
+    console.log(`\nTarjeta: ${card.label}`);
+    for (const m of card.movements ?? []) {
+      const sign = m.amount > 0 ? "+" : "";
+      console.log(`${m.date} | ${m.description.padEnd(40)} | ${sign}$${m.amount.toLocaleString("es-CL")} [${m.source}]`);
+    }
   }
 }
 ```
@@ -188,32 +205,50 @@ if (result.success) {
 {
   "success": true,
   "bank": "falabella",
-  "movements": [
+  "accounts": [
     {
-      "date": "08-03-2026",
-      "description": "COMPRA SUPERMERCADO LIDER",
-      "amount": -45230,
       "balance": 1250000,
-      "source": "account"
-    },
-    {
-      "date": "07-03-2026",
-      "description": "COMPRA COMERCIO",
-      "amount": -15990,
-      "balance": 0,
-      "source": "credit_card_unbilled",
-      "owner": "titular",
-      "installments": "01/03"
-    },
-    {
-      "date": "01-03-2026",
-      "description": "PAGO TARJETA DE CRÉDITO",
-      "amount": 70000,
-      "balance": 0,
-      "source": "credit_card_billed"
+      "movements": [
+        {
+          "date": "08-03-2026",
+          "description": "COMPRA SUPERMERCADO LIDER",
+          "amount": -45230,
+          "balance": 1250000,
+          "source": "account"
+        }
+      ]
     }
   ],
-  "balance": 1250000
+  "creditCards": [
+    {
+      "label": "CMR Mastercard ****1234",
+      "national": { "used": 50000, "available": 950000, "total": 1000000 },
+      "nextBillingDate": "19-04-2026",
+      "nextDueDate": "05-05-2026",
+      "periodExpenses": 15990,
+      "movements": [
+        {
+          "date": "07-03-2026",
+          "description": "COMPRA COMERCIO",
+          "amount": -15990,
+          "balance": 0,
+          "source": "credit_card_unbilled",
+          "card": "****1234",
+          "owner": "titular",
+          "installments": "01/03",
+          "totalAmount": 47970
+        },
+        {
+          "date": "01-03-2026",
+          "description": "PAGO TARJETA DE CRÉDITO",
+          "amount": 70000,
+          "balance": 0,
+          "source": "credit_card_billed",
+          "card": "****1234"
+        }
+      ]
+    }
+  ]
 }
 ```
 
@@ -227,10 +262,14 @@ Cada movimiento incluye un campo `source` que indica su origen:
 | `credit_card_unbilled` | Tarjeta de crédito — por facturar |
 | `credit_card_billed`   | Tarjeta de crédito — facturado    |
 
-Campos opcionales:
+Campos opcionales en `BankMovement`:
 
-- `owner`: `"titular"` o `"adicional"` (solo Falabella CMR por ahora)
-- `installments`: cuotas en formato `NN/NN`, ej: `"02/06"` = cuota 2 de 6 (Falabella, BChile, Itaú)
+| Campo          | Descripción                                                                 |
+| -------------- | --------------------------------------------------------------------------- |
+| `owner`        | `"titular"` o `"adicional"` (Falabella CMR)                                 |
+| `card`         | Máscara de la tarjeta, ej: `"****8335"` (BChile, Falabella)                 |
+| `installments` | Cuotas en formato `NN/NN`, ej: `"02/06"` = cuota 2 de 6                     |
+| `totalAmount`  | Monto total de la compra cuando es en cuotas (Falabella)                    |
 
 ## Seguridad
 
