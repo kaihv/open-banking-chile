@@ -184,50 +184,185 @@ async function extractMovementsFromFrame(frame: Frame, debugLog: string[]): Prom
   return all;
 }
 
-async function extractTCMovements(frame: Frame, tab: string, billingType: string, source: MovementSource, debugLog: string[]): Promise<BankMovement[]> {
+// ─── extractTCMovements — versión corregida ──────────────────────────────────
+//
+// Correcciones vs versión original:
+//  A. Signo del monto → lee el atributo alt del <img> ("Cargo" / "Abono")
+//  B. Paginador       → frame.click("#btn-next") en lugar de btn.click()
+//                       dentro de evaluate(). Angular no reacciona al .click()
+//                       nativo de JS; frame.click() simula un evento real del mouse.
+//  C. Navegación      → espera cambio de tabla con huella primera+última fila
+//                       antes de leer la siguiente página (anti-doble-lectura).
+//  D. Extracción de filas → estructura real confirmada desde el HTML:
+//       td[0] fecha | td[1] descripción+cont-circle | td[2] tipo tarjeta
+//       td[3] div.container_monto > p + img          | td[4] flecha detalle
+//     El código original usaba cells[cells.length-1] → agarraba td[4] (flecha >).
+//     La descripción se limpia extrayendo solo p.customRow del td[1].
+
+async function extractTCMovements(
+  frame: Frame,
+  tab: string,
+  billingType: string,
+  source: MovementSource,
+  debugLog: string[],
+): Promise<BankMovement[]> {
+
+  // ── FASE 1: Seleccionar pestaña (Nacional $ / Internacional USD) ────────────
   await frame.evaluate((tabName: string) => {
-    for (const span of document.querySelectorAll("bci-wk-tabs span, .listTab span, .listTab a span")) {
-      if (span.textContent?.trim() === tabName) { (span.closest("a") || span as HTMLElement).click(); return; }
+    for (const el of document.querySelectorAll(".listTab span, .bci-wk-tab span, .listTab a span")) {
+      if ((el as HTMLElement).textContent?.trim() === tabName) {
+        const anchor = el.closest("a") as HTMLElement | null;
+        if (anchor) { anchor.click(); return; }
+      }
     }
   }, tab);
-  await delay(2000);
+  await delay(2500);
 
+  // ── FASE 2: Seleccionar tipo de facturación ─────────────────────────────────
   await frame.evaluate((btnText: string) => {
-    for (const btn of document.querySelectorAll("button")) {
-      if (btn.textContent?.trim() === btnText) { btn.click(); return; }
+    for (const btn of document.querySelectorAll("button.btn_blue_border, button")) {
+      if ((btn as HTMLElement).textContent?.trim() === btnText) {
+        (btn as HTMLElement).click();
+        return;
+      }
     }
   }, billingType);
-  await delay(2000);
+  await delay(2500);
 
+  // ── Verificar si hay movimientos ────────────────────────────────────────────
   const hasNoMovements = await frame.evaluate(() => {
-    const text = document.body?.innerText?.toLowerCase() || "";
+    const text = (document.body?.innerText || "").toLowerCase();
     return text.includes("no tienes movimientos") || text.includes("sin movimientos");
   });
-  if (hasNoMovements) { debugLog.push(`    ${tab} / ${billingType}: sin movimientos`); return []; }
-
-  const raw = await frame.evaluate(() => {
-    const results: Array<{ date: string; description: string; amount: string }> = [];
-    for (const row of document.querySelectorAll("table tbody tr, .wrapper-table tr")) {
-      const cells = Array.from(row.querySelectorAll("td"));
-      if (cells.length < 2) continue;
-      const date = cells[0]?.textContent?.trim() || "";
-      if (!date || !/\d{1,2}[\/.\-\s]/.test(date)) continue;
-      const description = cells[1]?.textContent?.trim() || "";
-      const amount = cells[cells.length - 1]?.textContent?.trim() || cells[2]?.textContent?.trim() || "";
-      if (description && amount) results.push({ date, description, amount });
-    }
-    return results;
-  });
-
-  const movements: BankMovement[] = [];
-  for (const r of raw) {
-    const numStr = r.amount.replace(/[^0-9.\-,]/g, "");
-    const amount = parseFloat(numStr.replace(/\./g, "").replace(",", ".")) || 0;
-    if (amount === 0) continue;
-    movements.push({ date: normalizeDate(r.date), description: r.description, amount: -Math.abs(amount), balance: 0, source });
+  if (hasNoMovements) {
+    debugLog.push(`    ${tab} / ${billingType}: sin movimientos`);
+    return [];
   }
-  debugLog.push(`    ${tab} / ${billingType}: ${movements.length} movimientos`);
-  return movements;
+
+  // ── FASE 3: Paginación robusta ───────────────────────────────────────────────
+  const allMovements: BankMovement[] = [];
+
+  for (let pageIndex = 0; pageIndex < 50; pageIndex++) {
+
+    // Estructura real de la tabla (5 columnas):
+    //   td[0]  fecha
+    //   td[1]  descripción + opcional .cont-circle
+    //   td[2]  tipo de tarjeta  ← no se usa
+    //   td[3]  div.container_monto > p (monto) + img (alt="Cargo"|"Abono")
+    //   td[4]  flecha de detalle  ← ignorar
+    const rawRows = await frame.evaluate(() => {
+      const results: Array<{
+        date: string;
+        description: string;
+        rawAmount: string;
+        isCargo: boolean;
+        pendingConfirmation: boolean;
+      }> = [];
+
+      const rows = document.querySelectorAll("table.custom-table tbody tr, .wrapper-table table tbody tr");
+
+      for (const row of rows) {
+        const cells = row.querySelectorAll("td");
+        if (cells.length < 4) continue;
+
+        const date = cells[0]?.textContent?.trim() ?? "";
+        if (!date || !/\d/.test(date)) continue;
+
+        const descP = cells[1]?.querySelector("p.customRow, p:first-child") as HTMLElement | null;
+        const description = descP?.textContent?.trim() ?? cells[1]?.textContent?.trim() ?? "";
+
+        const pendingConfirmation = !!cells[1]?.querySelector(".cont-circle");
+
+        const montoCell = cells[3];
+        const montoP = montoCell?.querySelector(".container_monto p, p") as HTMLElement | null;
+        const rawAmount = montoP?.textContent?.trim() ?? "";
+
+        const img = montoCell?.querySelector("img") as HTMLImageElement | null;
+        const isCargo = (img?.getAttribute("alt") ?? "").toLowerCase() === "cargo";
+
+        if (!rawAmount) continue;
+
+        results.push({ date, description, rawAmount, isCargo, pendingConfirmation });
+      }
+      return results;
+    });
+
+    debugLog.push(`    ${tab}/${billingType} página ${pageIndex + 1}: ${rawRows.length} filas`);
+
+    for (const r of rawRows) {
+      const absAmount = parseChileanAmount(r.rawAmount);
+      if (absAmount === 0) continue;
+
+      allMovements.push({
+        date: normalizeDate(r.date),
+        description: r.description,
+        amount: r.isCargo ? -absAmount : absAmount,
+        balance: 0,
+        source,
+      });
+    }
+
+    // Verificar si hay página siguiente
+    const canAdvance = await frame.evaluate(() => {
+      const btn = document.getElementById("btn-next");
+      if (!btn) return false;
+      return (
+        !btn.classList.contains("disable") &&
+        btn.getAttribute("aria-disabled") !== "true" &&
+        !(btn as HTMLButtonElement).disabled
+      );
+    });
+
+    if (!canAdvance) break;
+
+    // frame.click() simula evento real del mouse; Angular ignora el .click()
+    // nativo de JS lanzado desde evaluate().
+    try {
+      await frame.click("#btn-next");
+    } catch {
+      break;
+    }
+
+    // Esperar que la tabla cambie antes de leer la siguiente página
+    const lastRow = rawRows[rawRows.length - 1];
+    const pageSignature =
+      (rawRows[0]?.date ?? "") +
+      (rawRows[0]?.rawAmount ?? "") +
+      (lastRow?.date ?? "") +
+      (lastRow?.rawAmount ?? "");
+
+    const changed = await waitForTableChange(frame, pageSignature, 8000);
+    if (!changed) break;
+  }
+
+  debugLog.push(`    ${tab} / ${billingType}: ${allMovements.length} movimientos totales`);
+  return allMovements;
+}
+
+async function waitForTableChange(
+  frame: Frame,
+  previousSignature: string,
+  timeoutMs: number,
+): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const currentSignature = await frame.evaluate(() => {
+      const rows = document.querySelectorAll("table.custom-table tbody tr, .wrapper-table table tbody tr");
+      if (rows.length === 0) return "";
+      const first = rows[0].querySelectorAll("td");
+      const last  = rows[rows.length - 1].querySelectorAll("td");
+      return (
+        (first[0]?.textContent?.trim() ?? "") +
+        (first[3]?.querySelector("p")?.textContent?.trim() ?? "") +
+        (last[0]?.textContent?.trim() ?? "") +
+        (last[3]?.querySelector("p")?.textContent?.trim() ?? "")
+      );
+    });
+
+    if (currentSignature && currentSignature !== previousSignature) return true;
+    await delay(400);
+  }
+  return false;
 }
 
 // ─── Main scrape function ────────────────────────────────────────
