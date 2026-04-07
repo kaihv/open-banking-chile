@@ -1,5 +1,5 @@
 import type { Page } from "puppeteer-core";
-import type { BankMovement, BankScraper, ScrapeResult, ScraperOptions } from "../types.js";
+import type { BankMovement, BankScraper, ScrapeResult, ScraperOptions, CreditCardBalance, MovementSource } from "../types.js";
 import { MOVEMENT_SOURCE } from "../types.js";
 import { closePopups, delay, parseChileanAmount, normalizeDate, deduplicateMovements } from "../utils.js";
 import { runScraper } from "../infrastructure/scraper-runner.js";
@@ -229,6 +229,316 @@ async function selectPeriod(page: Page, periodIndex: number, debugLog: string[])
   return true;
 }
 
+// ─── Credit card helpers ──────────────────────────────────────────
+
+async function navigateToTcMovements(page: Page, debugLog: string[]): Promise<boolean> {
+  debugLog.push("TC: Navigating to credit card movements...");
+
+  // Try direct URL navigation with retries
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      debugLog.push(`TC: Direct URL attempt ${attempt}...`);
+      await page.goto("https://portalpersonas.bice.cl/movimientos-tc", {
+        waitUntil: "networkidle2",
+        timeout: 20000,
+      });
+
+      // Wait for data to actually render (not just skeleton)
+      try {
+        await page.waitForSelector("app-progression-chart h4.chart-title, span.transaction-amount", {
+          timeout: 15000,
+        });
+      } catch {
+        // Data didn't load in time, retry
+        debugLog.push(`TC: Data didn't render after 15s`);
+        if (attempt < 3) { await delay(2000); continue; }
+      }
+      await delay(2000);
+
+      // Check if the page loaded with TC content
+      const pageText = await page.evaluate(() => {
+        const body = document.body.innerText || "";
+        return {
+          hasCard: /Visa|Mastercard|Amex|Tarjeta de Crédito/i.test(body),
+          hasCupo: /cupo|disponible|utilizado/i.test(body),
+          hasMovements: /movimientos|Fecha.*Monto/i.test(body),
+        };
+      });
+
+      if (pageText.hasCard || pageText.hasCupo || pageText.hasMovements) {
+        debugLog.push(`TC: Direct URL navigation OK (card=${pageText.hasCard}, cupo=${pageText.hasCupo}, mov=${pageText.hasMovements})`);
+        return true;
+      }
+      debugLog.push(`TC: Page loaded but no TC content detected yet`);
+    } catch (e) {
+      debugLog.push(`TC: Direct URL attempt ${attempt} failed: ${(e as Error).message}`);
+    }
+    await delay(2000);
+  }
+
+  // Fallback: click through sidebar menus
+  debugLog.push("TC: Trying sidebar menu navigation...");
+  const clickByText = async (text: string, exact = true): Promise<boolean> => {
+    return await page.evaluate(
+      ([searchText, isExact]) => {
+        const items = document.querySelectorAll("div, span, a, li, button");
+        for (const item of items) {
+          const el = item as HTMLElement;
+          const directText = Array.from(el.childNodes)
+            .filter((n) => n.nodeType === Node.TEXT_NODE)
+            .map((n) => n.textContent?.trim())
+            .join("")
+            .trim();
+          const fullText = el.innerText?.trim() || "";
+          const text = isExact ? directText : fullText;
+          if (isExact ? text === searchText : text.includes(searchText)) {
+            el.click();
+            return true;
+          }
+        }
+        return false;
+      },
+      [text, exact] as [string, boolean],
+    );
+  };
+
+  // Navigate to home first
+  try {
+    await page.goto("https://portalpersonas.bice.cl/home", {
+      waitUntil: "networkidle2",
+      timeout: 15000,
+    });
+    await delay(3000);
+  } catch { /* ignore */ }
+
+  // Click "Tarjetas de Crédito" sidebar item
+  if (!(await clickByText("Tarjetas de Crédito"))) {
+    debugLog.push("TC: 'Tarjetas de Crédito' not found in sidebar");
+    return false;
+  }
+  await delay(2000);
+
+  // Click "Consultas" submenu
+  if (!(await clickByText("Consultas"))) {
+    debugLog.push("TC: 'Consultas' not found in submenu");
+    return false;
+  }
+  await delay(1000);
+
+  // Click "Saldos y movimientos de Tarjeta de Crédito"
+  if (!(await clickByText("Saldos y movimientos", false))) {
+    debugLog.push("TC: 'Saldos y movimientos' link not found");
+    return false;
+  }
+  await delay(5000);
+
+  debugLog.push("TC: Menu navigation OK");
+  return true;
+}
+
+async function extractCreditCardInfo(page: Page, debugLog: string[]): Promise<{ balance?: CreditCardBalance; movements: BankMovement[] }> {
+  const data = await page.evaluate(() => {
+    const result: {
+      label?: string;
+      nationalUsed?: number;
+      nationalAvailable?: number;
+      nationalTotal?: number;
+      internationalUsed?: number;
+      internationalAvailable?: number;
+      internationalTotal?: number;
+      billingPeriod?: string;
+      nextBillingDate?: string;
+    } = {};
+
+    // Card label — use specific selectors: p.subheading.semibold + p.format-number
+    const brandEl = document.querySelector("p.subheading.semibold");
+    const numberEl = document.querySelector("p.format-number");
+    if (brandEl && numberEl) {
+      const brand = brandEl.textContent?.trim() || "";
+      const last4 = numberEl.textContent?.trim() || "";
+      result.label = `${brand}${last4}`;
+    } else {
+      // Fallback: look for Visa/Mastercard + 4 digits in a single element
+      const allP = document.querySelectorAll("p");
+      for (const p of allP) {
+        const t = (p as HTMLElement).innerText?.trim() || "";
+        if (/^(Visa|Mastercard|Amex)/i.test(t) && /\d{4}/.test(t) && t.length < 50) {
+          result.label = t;
+          break;
+        }
+      }
+    }
+
+    // Cupo info — extract from app-progression-chart elements (Nacional/Internacional)
+    const parseAmount = (text: string): number | undefined => {
+      const clean = text.replace(/[^0-9,.-]/g, "").replace(/\./g, "").replace(",", ".");
+      const num = parseFloat(clean);
+      return isNaN(num) ? undefined : Math.round(num);
+    };
+
+    const charts = document.querySelectorAll("app-progression-chart");
+    for (const chart of charts) {
+      const title = chart.querySelector("h4.chart-title")?.textContent?.trim() || "";
+      const allText = (chart as HTMLElement).innerText || "";
+
+      // Extract "Cupo Total: $X" directly
+      const totalMatch = allText.match(/Cupo Total:\s*(?:\$|US\$)?([\d.,]+)/i);
+      // The layout is: "$10.122.582  Cupo utilizado $0  Cupo disponible"
+      // We need the amount AFTER "Cupo utilizado" and "Cupo disponible"
+      const usedMatch = allText.match(/Cupo utilizado\s*(?:\$|US\$)?\s*([\d.,]+)/i);
+      const availMatch = allText.match(/Cupo disponible\s*(?:\$|US\$)?\s*([\d.,]+)/i);
+
+      if (title === "Nacional") {
+        if (usedMatch) result.nationalUsed = parseAmount(usedMatch[1]);
+        if (availMatch) result.nationalAvailable = parseAmount(availMatch[1]);
+        if (totalMatch) result.nationalTotal = parseAmount(totalMatch[1]);
+      } else if (title === "Internacional") {
+        if (usedMatch) result.internationalUsed = parseAmount(usedMatch[1]);
+        if (availMatch) result.internationalAvailable = parseAmount(availMatch[1]);
+        if (totalMatch) result.internationalTotal = parseAmount(totalMatch[1]);
+      }
+    }
+
+    // Billing dates — from card-billing-info-container
+    const allText = document.body.innerText || "";
+    const billingMatch = allText.match(/Facturación:\s*(\d{1,2}\s+\w+\s+\d{4})/i);
+    const dueMatch = allText.match(/Vencimiento:\s*(\d{1,2}\s+\w+\s+\d{4})/i);
+    if (billingMatch) result.billingPeriod = billingMatch[1];
+    if (dueMatch) result.nextBillingDate = dueMatch[1];
+
+    return result;
+  });
+
+  const ccBalance: CreditCardBalance = {
+    label: data.label || "Tarjeta de Crédito BICE",
+  };
+
+  if (data.nationalUsed !== undefined || data.nationalAvailable !== undefined || data.nationalTotal !== undefined) {
+    ccBalance.national = {
+      used: data.nationalUsed || 0,
+      available: data.nationalAvailable || 0,
+      total: data.nationalTotal || 0,
+    };
+  }
+
+  if (data.internationalUsed !== undefined || data.internationalAvailable !== undefined || data.internationalTotal !== undefined) {
+    ccBalance.international = {
+      used: data.internationalUsed || 0,
+      available: data.internationalAvailable || 0,
+      total: data.internationalTotal || 0,
+      currency: "USD",
+    };
+  }
+
+  if (data.billingPeriod) ccBalance.billingPeriod = data.billingPeriod;
+  if (data.nextBillingDate) ccBalance.nextBillingDate = data.nextBillingDate;
+
+  debugLog.push(`TC: Card=${ccBalance.label}, Nacional used=${ccBalance.national?.used}, Intl used=${ccBalance.international?.used}`);
+
+  return { balance: ccBalance, movements: [] };
+}
+
+async function extractTcMovementsFromPage(page: Page, source: MovementSource): Promise<BankMovement[]> {
+  const raw = await page.evaluate(() => {
+    const results: Array<{ date: string; description: string; amount: string; installments: string }> = [];
+
+    // Use app-transaction-row elements (BICE's actual DOM structure)
+    const rows = document.querySelectorAll("app-transaction-row");
+
+    for (const row of rows) {
+      // Date: div.date
+      const dateEl = row.querySelector("div.date");
+      const date = dateEl?.textContent?.trim() || "";
+      if (!/^\d{1,2}\s/.test(date)) continue;
+
+      // Description: div.transaction-detail
+      const descEl = row.querySelector("div.transaction-detail, div.transaction-detail.transaction-state");
+      const description = descEl?.textContent?.trim() || "";
+
+      // Installments: div.transaction-installments
+      const instEl = row.querySelector("div.transaction-installments");
+      const installments = instEl?.textContent?.trim() || "";
+
+      // Amount: span.transaction-amount
+      const amtEl = row.querySelector("span.transaction-amount");
+      const amount = amtEl?.textContent?.trim() || "";
+
+      if (date && description && amount) {
+        results.push({ date, description, amount, installments });
+      }
+    }
+
+    return results;
+  });
+
+  return raw
+    .map((r) => {
+      const amountVal = parseChileanAmount(r.amount);
+      if (amountVal === 0) return null;
+      // TC movements are always expenses (negative)
+      // Exception: abonos/payments which are credits
+      const descLower = r.description.toLowerCase();
+      const isCredit =
+        descLower.includes("abono") ||
+        /\bpago\b/.test(descLower) ||
+        descLower.includes("nota de credito") ||
+        descLower.includes("nota de crédito") ||
+        descLower.includes("reverso") ||
+        descLower.includes("anulacion") ||
+        descLower.includes("anulación");
+      const amount = isCredit ? amountVal : -amountVal;
+
+      return {
+        date: normalizeDate(r.date),
+        description: r.description,
+        amount,
+        balance: 0,
+        source,
+        installments: r.installments && r.installments !== "1 de 1" ? r.installments : undefined,
+      } as BankMovement;
+    })
+    .filter(Boolean) as BankMovement[];
+}
+
+async function clickTcTab(page: Page, tabText: string): Promise<boolean> {
+  const clicked = await page.evaluate((text) => {
+    const items = document.querySelectorAll("div, button, span");
+    for (const item of items) {
+      const el = item as HTMLElement;
+      const directText = Array.from(el.childNodes)
+        .filter((n) => n.nodeType === Node.TEXT_NODE || (n as HTMLElement).children?.length === 0)
+        .map((n) => n.textContent?.trim())
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+      if (directText.includes(text)) {
+        el.click();
+        return true;
+      }
+    }
+    return false;
+  }, tabText);
+
+  if (clicked) await delay(3000);
+  return clicked;
+}
+
+async function clickBilledPeriod(page: Page, periodIndex: number): Promise<boolean> {
+  const clicked = await page.evaluate((idx) => {
+    const buttons = document.querySelectorAll('button[role="tab"], button');
+    const periodButtons = Array.from(buttons).filter((btn) => {
+      const text = (btn as HTMLElement).innerText?.trim() || "";
+      return text.includes("Periodo de facturación");
+    });
+    if (idx >= periodButtons.length) return false;
+    (periodButtons[idx] as HTMLElement).click();
+    return true;
+  }, periodIndex);
+
+  if (clicked) await delay(3000);
+  return clicked;
+}
+
 // ─── Main scrape function ────────────────────────────────────────
 
 async function scrapeBice(session: BrowserSession, options: ScraperOptions): Promise<ScrapeResult> {
@@ -313,10 +623,71 @@ async function scrapeBice(session: BrowserSession, options: ScraperOptions): Pro
   debugLog.push(`  Total: ${deduplicated.length} unique movements`);
   progress(`Listo — ${deduplicated.length} movimientos totales`);
 
+  // ── Credit card movements ─────────────────────────────────────
+  let creditCards: CreditCardBalance[] | undefined;
+  debugLog.push("TC: Starting credit card extraction...");
+  progress("Extrayendo movimientos de tarjeta de crédito...");
+
+  const tcNav = await navigateToTcMovements(activePage, debugLog);
+  if (tcNav) {
+    // Wait for transaction data to actually render (not just skeleton)
+    debugLog.push("TC: Waiting for transaction data to load...");
+    try {
+      await activePage.waitForSelector("app-transaction-row", { timeout: 20000 });
+      debugLog.push("TC: Transaction rows appeared");
+    } catch {
+      debugLog.push("TC: Transaction rows did not appear after 20s, trying anyway...");
+    }
+    await delay(2000);
+
+    await doSave(activePage, "06-tc-page");
+
+    // Extract credit card balance info
+    const ccInfo = await extractCreditCardInfo(activePage, debugLog);
+    if (ccInfo.balance) {
+      creditCards = [ccInfo.balance];
+    }
+
+    // Extract unbilled movements (default tab: "Movimientos no facturados")
+    const unbilled = await extractTcMovementsFromPage(activePage, MOVEMENT_SOURCE.credit_card_unbilled);
+    debugLog.push(`TC: Unbilled movements: ${unbilled.length}`);
+    movements.push(...unbilled);
+
+    // Extract billed movements if BICE_MONTHS is set
+    const tcMonths = Math.min(Math.max(parseInt(process.env.BICE_MONTHS || "0", 10) || 0, 0), 11);
+    if (tcMonths > 0) {
+      debugLog.push(`TC: Fetching ${tcMonths} billed period(s)...`);
+      progress(`Extrayendo ${tcMonths} periodo(s) facturado(s) de TC...`);
+
+      // Switch to billed tab
+      if (await clickTcTab(activePage, "Movimientos facturados")) {
+        await doSave(activePage, "06b-tc-billed");
+        await delay(2000);
+
+        for (let i = 0; i < tcMonths; i++) {
+          if (!(await clickBilledPeriod(activePage, i))) {
+            debugLog.push(`TC: Period ${i + 1} not available`);
+            break;
+          }
+          await delay(2000);
+          const billed = await extractTcMovementsFromPage(activePage, MOVEMENT_SOURCE.credit_card_billed);
+          debugLog.push(`TC: Billed period ${i + 1}: ${billed.length} movements`);
+          movements.push(...billed);
+        }
+      }
+    }
+  } else {
+    debugLog.push("TC: Could not navigate to credit card section");
+  }
+
+  const finalMovements = deduplicateMovements(movements);
+  debugLog.push(`  Final total: ${finalMovements.length} movements (${deduplicated.length} account + ${finalMovements.length - deduplicated.length} TC)`);
+  progress(`Listo — ${finalMovements.length} movimientos totales`);
+
   await doSave(activePage, "07-final");
   const ss = doScreenshots ? (await activePage.screenshot({ encoding: "base64", fullPage: true })) as string : undefined;
 
-  return { success: true, bank, movements: deduplicated, balance: balance || undefined, screenshot: ss, debug: debugLog.join("\n") };
+  return { success: true, bank, movements: finalMovements, balance: balance || undefined, creditCards: creditCards, screenshot: ss, debug: debugLog.join("\n") };
 }
 
 // ─── Export ──────────────────────────────────────────────────────
