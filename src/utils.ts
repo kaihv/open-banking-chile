@@ -216,6 +216,37 @@ export function deduplicateMovements(movements: BankMovement[]): BankMovement[] 
   });
 }
 
+/**
+ * Converts a DD-MM-YYYY date to a human-readable month+year label.
+ * Example: "19-03-2026" → "Marzo 2026"
+ */
+export function monthYearLabel(dateStr: string): string {
+  const monthNames = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+  const parts = dateStr.split("-");
+  if (parts.length < 3) return dateStr;
+  const monthIdx = parseInt(parts[1], 10) - 1;
+  if (monthIdx < 0 || monthIdx > 11) return dateStr;
+  return `${monthNames[monthIdx]} ${parts[2]}`;
+}
+
+/**
+ * Deduplicates movements that appear in both unbilled and billed sources.
+ * If the same transaction (date+description+amount) appears as both
+ * credit_card_unbilled and credit_card_billed, keep only the billed one.
+ */
+export function deduplicateAcrossSources(movements: BankMovement[]): BankMovement[] {
+  const billedKeys = new Set<string>();
+  for (const m of movements) {
+    if (m.source === "credit_card_billed") {
+      billedKeys.add(`${m.date}|${m.description}|${m.amount}`);
+    }
+  }
+  return movements.filter(m => {
+    if (m.source !== "credit_card_unbilled") return true;
+    return !billedKeys.has(`${m.date}|${m.description}|${m.amount}`);
+  });
+}
+
 // ─── Spinner ──────────────────────────────────────────────────
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
