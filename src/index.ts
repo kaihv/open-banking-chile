@@ -9,6 +9,7 @@ import itau from "./banks/itau.js";
 import santander from "./banks/santander.js";
 import scotiabank from "./banks/scotiabank.js";
 import type { BankScraper } from "./types.js";
+import cencosud from "./banks/cencosud.js";
 
 /** Registro de todos los bancos disponibles */
 export const banks: Record<string, BankScraper> = {
@@ -22,6 +23,7 @@ export const banks: Record<string, BankScraper> = {
   itau,
   santander,
   scotiabank,
+  cencosud,
 };
 
 /** Lista de bancos soportados */
@@ -63,3 +65,4 @@ export { default as itau } from "./banks/itau.js";
 export { default as santander } from "./banks/santander.js";
 export { default as bancosecurity } from "./banks/bancosecurity.js";
 export { default as scotiabank } from "./banks/scotiabank.js";
+export { default as cencosud } from "./banks/cencosud.js";

@@ -55,6 +55,7 @@ También en esta versión: utilidades compartidas (`parseChileanAmount`, `normal
 | BCI                               | `bci`        | ✅ Funcional |
 | Itaú                              | `itau`       | ✅ Funcional |
 | Banco Estado (CuentaRUT)          | `bestado`    | ✅ Funcional |
+| Tarjeta Cencosud                  | `cencosud`   | ✅ Funcional |
 
 **¿Tu banco no está?** → [Contribuir](#contribuir)
 
@@ -121,6 +122,10 @@ ITAU_PASS=tu_clave
 # Banco Estado
 BESTADO_RUT=12345678-9
 BESTADO_PASS=tu_clave
+
+# Tarjeta Cencosud
+CENCOSUD_RUT=12345678-9
+CENCOSUD_PASS=tu_clave
 ```
 
 Ejecuta la librería con el comando `npx`, `dotenv` incluirá automáticamente las variables de entorno.
@@ -134,6 +139,7 @@ npx open-banking-chile --bank bchile --pretty
 npx open-banking-chile --bank edwards --pretty
 npx open-banking-chile --bank itau --pretty
 npx open-banking-chile --bank bestado --pretty
+npx open-banking-chile --bank cencosud --pretty
 
 # Solo movimientos
 npx open-banking-chile --bank falabella --movements | jq .
@@ -306,6 +312,7 @@ src/
     bchile.ts                 — Banco de Chile
     bci.ts                    — BCI (iframes + BCI Pass)
     bice.ts                   — Banco BICE
+    cencosud.ts               — Tarjeta Cencosud (hCaptcha intermitente, requiere --headful si aparece)
     edwards.ts                — Banco Edwards
     itau.ts                   — Itaú
     santander.ts              — Banco Santander
@@ -378,10 +385,24 @@ interface BankScraper {
 | 0 movimientos         | Usa `--screenshots --pretty` y revisa el debug log                                             |
 | Login falla           | Verifica RUT y clave, prueba con `--headful`                                                   |
 | BancoEstado bloqueado | BancoEstado bloquea headless (TLS fingerprinting). Siempre abre Chrome visible. Ver nota abajo |
+| Cencosud pide CAPTCHA | Ocurre ocasionalmente. En headless retorna error — reintenta con `--headful` para resolverlo manualmente |
 
 ### BancoEstado y modo headless
 
 BancoEstado detecta navegadores headless a nivel de red (TLS fingerprinting), no solo por JavaScript. Ni `puppeteer-extra-plugin-stealth` ni `rebrowser-puppeteer-core` logran evadir esta detección. El scraper siempre corre en modo headful (Chrome visible).
+
+### Tarjeta Cencosud y CAPTCHA
+
+Tarjeta Cencosud presenta ocasionalmente un hCaptcha en el login. No siempre aparece.
+
+- **Headless** (modo por defecto): el scraper detecta el CAPTCHA y retorna un error claro.
+- **Headful** (`--headful`): el scraper pausa y espera a que resuelvas el CAPTCHA manualmente en el navegador visible, luego continúa.
+
+```bash
+node dist/cli.js --bank cencosud --headful --pretty
+```
+
+El tiempo máximo de espera es 180 segundos (configurable con `CENCOSUD_CAPTCHA_TIMEOUT=segundos`).
 
 **En servidores Linux sin GUI**, usa Xvfb (display virtual):
 
