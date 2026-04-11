@@ -528,7 +528,7 @@ async function scrapeScotiabank(session: BrowserSession, options: ScraperOptions
           try {
             clickedConsultar = await frame.evaluate(() => {
               for (const el of document.querySelectorAll("a, button, span, div")) {
-                const text = el.innerText?.trim().toLowerCase() || "";
+                const text = (el as HTMLElement).innerText?.trim().toLowerCase() || "";
                 if (text.includes("consultar cartola") && text.length < 40) {
                   (el as HTMLElement).click(); return true;
                 }
