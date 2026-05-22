@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import type { Page } from "puppeteer-core";
-import type { BankMovement, CardOwner } from "./types.js";
+import type { AccountBalance, BankMovement, CardOwner } from "./types.js";
 import { CARD_OWNER } from "./types.js";
 
 /**
@@ -170,6 +170,41 @@ export function normalizeDate(raw: string): string {
   }
 
   return value;
+}
+
+/** Convierte DD-MM-YYYY a entero YYYYMMDD para comparaciones. */
+export function chileanDateSortKey(raw: string): number | null {
+  const normalized = normalizeDate(raw);
+  const match = normalized.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  if (!match) return null;
+  return Number.parseInt(`${match[3]}${match[2]}${match[1]}`, 10);
+}
+
+/** Filtra movimientos con fecha estrictamente posterior a `since` (dd-mm-yyyy). */
+export function filterMovementsSince(
+  movements: BankMovement[],
+  since: string,
+): BankMovement[] {
+  const sinceKey = chileanDateSortKey(since);
+  if (sinceKey == null) return movements;
+
+  return movements.filter((movement) => {
+    const movementKey = chileanDateSortKey(movement.date);
+    if (movementKey == null) return true;
+    return movementKey > sinceKey;
+  });
+}
+
+/** Aplica `since` a cada bucket de cuenta. */
+export function filterAccountBucketsSince(
+  accounts: AccountBalance[],
+  since?: string,
+): AccountBalance[] {
+  if (!since) return accounts;
+  return accounts.map((account) => ({
+    ...account,
+    movements: filterMovementsSince(account.movements, since),
+  }));
 }
 
 // ─── Movements ────────────────────────────────────────────────

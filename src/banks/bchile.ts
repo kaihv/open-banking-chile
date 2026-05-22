@@ -1,7 +1,7 @@
 import type { Page } from "puppeteer-core";
-import type { BankMovement, BankScraper, CreditCardBalance, MovementSource, ScrapeResult, ScraperOptions } from "../types.js";
+import type { AccountBalance, BankMovement, BankScraper, CreditCardBalance, MovementSource, ScrapeResult, ScraperOptions } from "../types.js";
 import { MOVEMENT_SOURCE } from "../types.js";
-import { closePopups, delay, formatRut, monthYearLabel, normalizeDate, deduplicateMovements, deduplicateAcrossSources, normalizeInstallments } from "../utils.js";
+import { closePopups, delay, formatRut, monthYearLabel, normalizeDate, deduplicateMovements, deduplicateAcrossSources, normalizeInstallments, filterAccountBucketsSince, filterMovementsSince } from "../utils.js";
 import { runScraper } from "../infrastructure/scraper-runner.js";
 import type { BrowserSession } from "../infrastructure/browser.js";
 import { detect2FA, waitFor2FA } from "../actions/two-factor.js";
@@ -205,55 +205,104 @@ async function bchileLogin(
 
 // ─── Data extraction ─────────────────────────────────────────────
 
-function cartolaMovToMovement(mov: ApiCartolaMov): BankMovement {
-  return { date: normalizeDate(mov.fechaContable), description: mov.descripcion.trim(), amount: mov.tipo === "cargo" ? -Math.abs(mov.monto) : Math.abs(mov.monto), balance: mov.saldo, source: MOVEMENT_SOURCE.account };
+function accountLabelFromProduct(acct: ApiProduct): string {
+  return `${acct.descripcionLogo} ${acct.mascara}`.trim();
+}
+
+/** Deposit accounts to include in cartola fetch (corriente, vista, ahorro, línea de crédito). */
+export function isBchileDepositAccount(product: ApiProduct): boolean {
+  const tipo = (product.tipo || "").toLowerCase();
+  if (
+    tipo === "cuenta" ||
+    tipo === "cuentacorrientemonedalocal" ||
+    tipo === "cuentavistamonedalocal" ||
+    tipo === "cuentaahorromonedalocal"
+  ) {
+    return true;
+  }
+
+  const logo = (product.descripcionLogo || "").toLowerCase();
+  return (
+    logo.includes("cuenta vista") ||
+    logo.includes("cuenta corriente") ||
+    logo.includes("linea de credito")
+  );
+}
+
+const BCHILE_CARTOLA_MAX_PAGES = 100;
+
+function cartolaMovToMovement(mov: ApiCartolaMov, accountLabel: string): BankMovement {
+  return {
+    date: normalizeDate(mov.fechaContable),
+    description: mov.descripcion.trim(),
+    amount: mov.tipo === "cargo" ? -Math.abs(mov.monto) : Math.abs(mov.monto),
+    balance: mov.saldo,
+    source: MOVEMENT_SOURCE.account,
+    account: accountLabel,
+  };
 }
 
 function facturadoToMovement(tx: ApiTransaccionFacturada, source: MovementSource, cardMask?: string): BankMovement {
   return { date: normalizeDate(tx.fechaTransaccionString), description: tx.descripcion.trim(), amount: tx.grupo === "pagos" ? Math.abs(tx.montoTransaccion) : -Math.abs(tx.montoTransaccion), balance: 0, source, card: cardMask, installments: normalizeInstallments(tx.cuotas) };
 }
 
-async function fetchAccountMovements(page: Page, products: ApiProduct[], fullName: string, rut: string, debugLog: string[]): Promise<{ movements: BankMovement[]; balance?: number }> {
-  const accounts = products.filter(p => p.tipo === "cuenta" || p.tipo === "cuentaCorrienteMonedaLocal");
+async function fetchAccountMovements(
+  page: Page,
+  products: ApiProduct[],
+  fullName: string,
+  rut: string,
+  debugLog: string[],
+): Promise<AccountBalance[]> {
+  const accounts = products.filter(isBchileDepositAccount);
   const seenNums = new Set<string>();
   const unique = accounts.filter(a => { if (seenNums.has(a.numero)) return false; seenNums.add(a.numero); return true; });
-  if (unique.length === 0) return { movements: [] };
+  if (unique.length === 0) return [];
 
   const baseUrl = page.url().split("#")[0];
   await page.goto(`${baseUrl}#/movimientos/cuenta/saldos-movimientos`, { waitUntil: "networkidle2", timeout: 30000 });
   await delay(5000);
 
-  const movements: BankMovement[] = [];
-  let balance: number | undefined;
+  const buckets: AccountBalance[] = [];
 
   for (const acct of unique) {
-    debugLog.push(`  Fetching ${acct.descripcionLogo} ${acct.mascara}`);
+    const label = accountLabelFromProduct(acct);
+    debugLog.push(`  Fetching ${label}`);
     const cuentaSeleccionada = { nombreCliente: fullName, rutCliente: rut, numero: acct.numero, mascara: acct.mascara, selected: true, codigoProducto: acct.codigo, claseCuenta: acct.claseCuenta, moneda: acct.codigoMoneda };
+    const accountMovements: BankMovement[] = [];
+    let balance: number | undefined;
 
     try {
       await apiPost(page, "movimientos/getConfigConsultaMovimientos", { cuentasSeleccionadas: [cuentaSeleccionada] });
       const cartola = await apiPost<ApiCartolaResponse>(page, "bff-pper-prd-cta-movimientos/movimientos/getCartola", { cuentaSeleccionada, cabecera: { statusGenerico: true, paginacionDesde: 1 } });
 
       if (cartola.movimientos) {
-        for (const mov of cartola.movimientos) movements.push(cartolaMovToMovement(mov));
-        if (balance === undefined && acct.codigoMoneda === "CLP" && cartola.movimientos.length > 0) balance = cartola.movimientos[0].saldo;
+        for (const mov of cartola.movimientos) accountMovements.push(cartolaMovToMovement(mov, label));
+        if (acct.codigoMoneda === "CLP" && cartola.movimientos.length > 0) balance = cartola.movimientos[0].saldo;
 
         let hasMore = cartola.movimientos.length > 0 && (cartola.pagina?.[0]?.masPaginas ?? false);
         let offset = 1 + cartola.movimientos.length;
-        for (let p = 2; hasMore && p <= 25; p++) {
+        for (let p = 2; hasMore && p <= BCHILE_CARTOLA_MAX_PAGES; p++) {
           try {
             const next = await apiPost<ApiCartolaResponse>(page, "bff-pper-prd-cta-movimientos/movimientos/getCartola", { cuentaSeleccionada, cabecera: { statusGenerico: true, paginacionDesde: offset } });
             if (!next.movimientos?.length) break;
-            for (const mov of next.movimientos) movements.push(cartolaMovToMovement(mov));
+            for (const mov of next.movimientos) accountMovements.push(cartolaMovToMovement(mov, label));
             offset += next.movimientos.length;
             hasMore = next.pagina?.[0]?.masPaginas ?? false;
           } catch { hasMore = false; }
         }
       }
     } catch (err) { debugLog.push(`    → Error: ${err instanceof Error ? err.message : String(err)}`); }
+
+    debugLog.push(`  ${label}: ${accountMovements.length} movement(s)`);
+
+    buckets.push({
+      label,
+      balance,
+      movements: deduplicateMovements(accountMovements),
+    });
   }
 
-  return { movements, balance };
+  return buckets;
 }
 
 async function fetchCreditCardData(page: Page, fullName: string, debugLog: string[]): Promise<{ movements: BankMovement[]; creditCards: CreditCardBalance[] }> {
@@ -417,9 +466,13 @@ async function scrapeBchile(session: BrowserSession, options: ScraperOptions): P
   // Account movements
   debugLog.push("6. Fetching account movements via API...");
   progress("Extrayendo movimientos de cuenta...");
-  const acctResult = await fetchAccountMovements(page, products.productos, fullName, products.rut, debugLog);
-  if (balance === undefined && acctResult.balance !== undefined) balance = acctResult.balance;
-  debugLog.push(`  Account movements: ${acctResult.movements.length}`);
+  let accountBuckets = await fetchAccountMovements(page, products.productos, fullName, products.rut, debugLog);
+  if (balance === undefined) {
+    const clpBucket = accountBuckets.find((bucket) => bucket.balance != null);
+    if (clpBucket?.balance != null) balance = clpBucket.balance;
+  }
+  const accountMovementCount = accountBuckets.reduce((sum, bucket) => sum + bucket.movements.length, 0);
+  debugLog.push(`  Account movements: ${accountMovementCount} across ${accountBuckets.length} account(s)`);
 
   // Credit card data
   debugLog.push("7. Fetching credit card data via API...");
@@ -437,8 +490,18 @@ async function scrapeBchile(session: BrowserSession, options: ScraperOptions): P
   }
 
   const totalTc = tcResult.creditCards.reduce((s, cc) => s + (cc.movements?.length ?? 0), 0);
-  debugLog.push(`8. Total: ${acctResult.movements.length} account + ${totalTc} TC movements`);
-  progress(`Listo — ${acctResult.movements.length + totalTc} movimientos totales`);
+  debugLog.push(`8. Total: ${accountMovementCount} account + ${totalTc} TC movements`);
+  progress(`Listo — ${accountMovementCount + totalTc} movimientos totales`);
+
+  if (options.since) {
+    accountBuckets = filterAccountBucketsSince(accountBuckets, options.since);
+    for (const cc of tcResult.creditCards) {
+      if (cc.movements?.length) {
+        cc.movements = filterMovementsSince(cc.movements, options.since);
+      }
+    }
+    debugLog.push(`  Applied since=${options.since} filter`);
+  }
 
   await doSave(page, "06-final");
   const ss = doScreenshots ? await page.screenshot({ encoding: "base64" }) as string : undefined;
@@ -446,7 +509,7 @@ async function scrapeBchile(session: BrowserSession, options: ScraperOptions): P
   return {
     success: true,
     bank,
-    accounts: [{ balance, movements: deduplicateMovements(acctResult.movements) }],
+    accounts: accountBuckets,
     creditCards: tcResult.creditCards.length > 0 ? tcResult.creditCards : undefined,
     screenshot: ss,
     debug: debugLog.join("\n"),
