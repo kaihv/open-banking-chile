@@ -209,6 +209,28 @@ function accountLabelFromProduct(acct: ApiProduct): string {
   return `${acct.descripcionLogo} ${acct.mascara}`.trim();
 }
 
+/** Deposit accounts to include in cartola fetch (corriente, vista, ahorro, línea de crédito). */
+export function isBchileDepositAccount(product: ApiProduct): boolean {
+  const tipo = (product.tipo || "").toLowerCase();
+  if (
+    tipo === "cuenta" ||
+    tipo === "cuentacorrientemonedalocal" ||
+    tipo === "cuentavistamonedalocal" ||
+    tipo === "cuentaahorromonedalocal"
+  ) {
+    return true;
+  }
+
+  const logo = (product.descripcionLogo || "").toLowerCase();
+  return (
+    logo.includes("cuenta vista") ||
+    logo.includes("cuenta corriente") ||
+    logo.includes("linea de credito")
+  );
+}
+
+const BCHILE_CARTOLA_MAX_PAGES = 100;
+
 function cartolaMovToMovement(mov: ApiCartolaMov, accountLabel: string): BankMovement {
   return {
     date: normalizeDate(mov.fechaContable),
@@ -231,7 +253,7 @@ async function fetchAccountMovements(
   rut: string,
   debugLog: string[],
 ): Promise<AccountBalance[]> {
-  const accounts = products.filter(p => p.tipo === "cuenta" || p.tipo === "cuentaCorrienteMonedaLocal");
+  const accounts = products.filter(isBchileDepositAccount);
   const seenNums = new Set<string>();
   const unique = accounts.filter(a => { if (seenNums.has(a.numero)) return false; seenNums.add(a.numero); return true; });
   if (unique.length === 0) return [];
@@ -259,7 +281,7 @@ async function fetchAccountMovements(
 
         let hasMore = cartola.movimientos.length > 0 && (cartola.pagina?.[0]?.masPaginas ?? false);
         let offset = 1 + cartola.movimientos.length;
-        for (let p = 2; hasMore && p <= 25; p++) {
+        for (let p = 2; hasMore && p <= BCHILE_CARTOLA_MAX_PAGES; p++) {
           try {
             const next = await apiPost<ApiCartolaResponse>(page, "bff-pper-prd-cta-movimientos/movimientos/getCartola", { cuentaSeleccionada, cabecera: { statusGenerico: true, paginacionDesde: offset } });
             if (!next.movimientos?.length) break;
@@ -270,6 +292,8 @@ async function fetchAccountMovements(
         }
       }
     } catch (err) { debugLog.push(`    → Error: ${err instanceof Error ? err.message : String(err)}`); }
+
+    debugLog.push(`  ${label}: ${accountMovements.length} movement(s)`);
 
     buckets.push({
       label,
