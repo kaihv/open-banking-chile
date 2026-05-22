@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { DebugLog, deduplicateMovements } from "./utils.js";
+import { DebugLog, deduplicateMovements, filterMovementsSince } from "./utils.js";
 import { MOVEMENT_SOURCE } from "./types.js";
 import type { BankMovement } from "./types.js";
 
@@ -116,5 +116,19 @@ describe("deduplicateMovements", () => {
     const b = movement({ description: "B", balance: 200 });
     const result = deduplicateMovements([a, b, a]);
     expect(result.map((m) => m.description)).toEqual(["A", "B"]);
+  });
+});
+
+describe("filterMovementsSince", () => {
+  it("keeps movements strictly after since (dd-mm-yyyy)", () => {
+    const result = filterMovementsSince(
+      [
+        movement({ date: "01-03-2026", description: "old" }),
+        movement({ date: "15-03-2026", description: "new" }),
+      ],
+      "10-03-2026",
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]?.description).toBe("new");
   });
 });

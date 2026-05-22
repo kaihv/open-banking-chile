@@ -35,6 +35,8 @@ export interface BankMovement {
   installments?: string;
   /** Monto total de la compra (distinto de amount cuando es en cuotas) */
   totalAmount?: number;
+  /** Cuenta de origen cuando el titular tiene varios productos (ej: "Cuenta Corriente ****2706") */
+  account?: string;
 }
 
 /** Saldo y movimientos de una cuenta bancaria */
@@ -131,6 +133,11 @@ export interface ScraperOptions extends BankCredentials {
   onProgress?: (step: string) => void;
   /** Callback invocado en cada línea de debug en tiempo real */
   onDebug?: (line: string) => void;
+  /**
+   * Solo importar movimientos posteriores a esta fecha (formato dd-mm-yyyy).
+   * El scraper sigue consultando la cartola completa; el filtro se aplica al resultado.
+   */
+  since?: string;
 }
 
 /** Interfaz que debe implementar cada banco */
