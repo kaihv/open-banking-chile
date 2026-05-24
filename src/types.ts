@@ -27,6 +27,8 @@ export interface BankMovement {
   balance: number;
   /** Origen: cuenta corriente, TC no facturada, TC facturada */
   source: MovementSource;
+  /** Moneda del movimiento (ISO 4217 alpha, ej: "USD", "EUR"). Si está ausente, asumir CLP. */
+  currency?: string;
   /** Titular o adicional de la tarjeta */
   owner?: CardOwner;
   /** Identificador de la tarjeta (ej: "****8335") — útil cuando hay múltiples tarjetas */

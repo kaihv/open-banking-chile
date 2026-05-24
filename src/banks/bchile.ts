@@ -21,7 +21,20 @@ const TWO_FACTOR_CONFIG = {
 interface ApiProduct { id: string; numero: string; mascara: string; codigo: string; codigoMoneda: string; label: string; tipo: string; claseCuenta: string; tarjetaHabiente: string | null; descripcionLogo: string; tipoCliente: string; }
 interface ApiCardInfo { titular: boolean; marca: string; tipo: string; idProducto: string; numero: string; }
 interface ApiCardSaldo { cupoTotalNacional: number; cupoUtilizadoNacional: number; cupoDisponibleNacional: number; cupoTotalInternacional: number; cupoUtilizadoInternacional: number; cupoDisponibleInternacional: number; }
-interface ApiMovNoFactur { origenTransaccion: string; fechaTransaccionString: string; montoCompra: number; glosaTransaccion: string; despliegueCuotas: string; }
+interface ApiMovNoFactur { origenTransaccion: string; fechaTransaccionString: string; montoCompra: number; glosaTransaccion: string; despliegueCuotas: string; codigoMonedaOrigen?: number; }
+
+// ISO 4217 numeric → alpha. Monedas comunes en compras internacionales chilenas.
+const ISO_CURRENCY_BY_NUMERIC: Record<number, string> = {
+  152: "CLP", 840: "USD", 978: "EUR", 826: "GBP", 124: "CAD",
+  36: "AUD", 392: "JPY", 986: "BRL", 32: "ARS", 858: "UYU", 484: "MXN", 604: "PEN",
+};
+
+function resolveUnbilledCurrency(mov: ApiMovNoFactur): string | undefined {
+  if (mov.origenTransaccion !== "INT") return undefined;
+  const alpha = mov.codigoMonedaOrigen !== undefined ? ISO_CURRENCY_BY_NUMERIC[mov.codigoMonedaOrigen] : undefined;
+  // Fallback: si es INT pero no reconocemos el código, asumir USD (caso más común en TC chilenas).
+  return alpha && alpha !== "CLP" ? alpha : "USD";
+}
 interface ApiNoFacturResponse { fechaProximaFacturacionCalendario: string; fechaProximoVencimiento?: string; fechaVencimiento?: string; gastosPeriodo?: number; montoGastosPeriodo?: number; listaMovNoFactur: ApiMovNoFactur[]; }
 interface ApiFechaFacturacion { fechaFacturacion: string; existeEstadoCuentaNacional: string; existeEstadoCuentaInternacional: string; }
 interface ApiTransaccionFacturada { fechaTransaccionString: string; montoTransaccion: number; descripcion: string; cuotas: string; grupo: string; }
@@ -209,8 +222,8 @@ function cartolaMovToMovement(mov: ApiCartolaMov): BankMovement {
   return { date: normalizeDate(mov.fechaContable), description: mov.descripcion.trim(), amount: mov.tipo === "cargo" ? -Math.abs(mov.monto) : Math.abs(mov.monto), balance: mov.saldo, source: MOVEMENT_SOURCE.account };
 }
 
-function facturadoToMovement(tx: ApiTransaccionFacturada, source: MovementSource, cardMask?: string): BankMovement {
-  return { date: normalizeDate(tx.fechaTransaccionString), description: tx.descripcion.trim(), amount: tx.grupo === "pagos" ? Math.abs(tx.montoTransaccion) : -Math.abs(tx.montoTransaccion), balance: 0, source, card: cardMask, installments: normalizeInstallments(tx.cuotas) };
+function facturadoToMovement(tx: ApiTransaccionFacturada, source: MovementSource, cardMask?: string, currency?: string): BankMovement {
+  return { date: normalizeDate(tx.fechaTransaccionString), description: tx.descripcion.trim(), amount: tx.grupo === "pagos" ? Math.abs(tx.montoTransaccion) : -Math.abs(tx.montoTransaccion), balance: 0, source, card: cardMask, ...(currency && { currency }), installments: normalizeInstallments(tx.cuotas) };
 }
 
 async function fetchAccountMovements(page: Page, products: ApiProduct[], fullName: string, rut: string, debugLog: string[]): Promise<{ movements: BankMovement[]; balance?: number }> {
@@ -291,7 +304,8 @@ async function fetchCreditCardData(page: Page, fullName: string, debugLog: strin
       const unbilledMovs: BankMovement[] = [];
       for (const mov of nf.listaMovNoFactur) {
         const amount = mov.montoCompra < 0 ? Math.abs(mov.montoCompra) : -Math.abs(mov.montoCompra);
-        unbilledMovs.push({ date: normalizeDate(mov.fechaTransaccionString), description: mov.glosaTransaccion.trim(), amount, balance: 0, source: MOVEMENT_SOURCE.credit_card_unbilled, card: mascara, installments: normalizeInstallments(mov.despliegueCuotas) });
+        const currency = resolveUnbilledCurrency(mov);
+        unbilledMovs.push({ date: normalizeDate(mov.fechaTransaccionString), description: mov.glosaTransaccion.trim(), amount, balance: 0, source: MOVEMENT_SOURCE.credit_card_unbilled, card: mascara, ...(currency && { currency }), installments: normalizeInstallments(mov.despliegueCuotas) });
       }
       // periodExpenses: suma de cargos no facturados (montos negativos → gastos)
       const periodExpensesRaw = nf.gastosPeriodo ?? nf.montoGastosPeriodo;
@@ -314,7 +328,7 @@ async function fetchCreditCardData(page: Page, fullName: string, debugLog: strin
             apiPost<ApiResumenFacturado>(page, "tarjetas/estadocuenta/nacional/resumen-por-fecha", resumenBody),
             apiPost<ApiResumenFacturado>(page, "tarjetas/estadocuenta/internacional/resumen-por-fecha", resumenBody),
           ]);
-          for (const r of [nacR, intR]) {
+          for (const [r, currency] of [[nacR, undefined], [intR, "USD"]] as const) {
             if (r.status !== "fulfilled" || !r.value.existeEstadoCuenta) continue;
             const res = r.value;
 
@@ -326,7 +340,7 @@ async function fetchCreditCardData(page: Page, fullName: string, debugLog: strin
               // Skip section-subtotal rows (e.g. "TOTAL PAGOS A LA CUENTA").
               const desc = tx.descripcion.trim().toUpperCase();
               if (desc.startsWith("TOTAL ") && desc.endsWith("A LA CUENTA")) continue;
-              movements.push(facturadoToMovement(tx, MOVEMENT_SOURCE.credit_card_billed, mascara));
+              movements.push(facturadoToMovement(tx, MOVEMENT_SOURCE.credit_card_billed, mascara, currency));
             }
 
             // Override nextBillingDate/nextDueDate with accurate date-format values from resumen
