@@ -78,11 +78,20 @@ async function login(page: Page, rut: string, password: string, debugLog: string
   } catch { /* no banner */ }
   await screenshotIfEnabled(page, "01-homepage", doScreenshots, debugLog);
 
-  // Click "Mi cuenta" (triggers navigation)
+  // Click "Mi cuenta" (triggers navigation).
+  // The homepage has 3 elements with text "Mi cuenta": a loan-calculator button
+  // (first in DOM, NOT the login), and the real login buttons #btn-auth-normal
+  // (desktop) and #btn-auth (responsive). Prefer the specific IDs; only fall
+  // back to text matching if neither is visible.
   debugLog.push("2. Clicking 'Mi cuenta'...");
   progress("Ingresando a Mi cuenta...");
   try {
-    await page.locator('a, button').filter({ hasText: "Mi cuenta" }).first().click({ timeout: 5000 });
+    const authBtn = page.locator('#btn-auth-normal, #btn-auth').first();
+    if (await authBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await authBtn.click({ timeout: 5000 });
+    } else {
+      await page.locator('a, button').filter({ hasText: "Mi cuenta" }).first().click({ timeout: 5000 });
+    }
   } catch { /* may cause navigation context change */ }
   await page.waitForLoadState("networkidle").catch(() => {});
   await delay(3000);
