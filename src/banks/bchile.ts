@@ -21,7 +21,7 @@ const TWO_FACTOR_CONFIG = {
 interface ApiProduct { id: string; numero: string; mascara: string; codigo: string; codigoMoneda: string; label: string; tipo: string; claseCuenta: string; tarjetaHabiente: string | null; descripcionLogo: string; tipoCliente: string; }
 interface ApiCardInfo { titular: boolean; marca: string; tipo: string; idProducto: string; numero: string; }
 interface ApiCardSaldo { cupoTotalNacional: number; cupoUtilizadoNacional: number; cupoDisponibleNacional: number; cupoTotalInternacional: number; cupoUtilizadoInternacional: number; cupoDisponibleInternacional: number; }
-interface ApiMovNoFactur { origenTransaccion: string; fechaTransaccionString: string; montoCompra: number; glosaTransaccion: string; despliegueCuotas: string; }
+interface ApiMovNoFactur { origenTransaccion: string; fechaTransaccionString: string; montoCompra: number; glosaTransaccion: string; despliegueCuotas: string; codigoMonedaOrigen?: number | string; montoMonedaOrigen?: number | string; }
 interface ApiNoFacturResponse { fechaProximaFacturacionCalendario: string; fechaProximoVencimiento?: string; fechaVencimiento?: string; gastosPeriodo?: number; montoGastosPeriodo?: number; listaMovNoFactur: ApiMovNoFactur[]; }
 interface ApiFechaFacturacion { fechaFacturacion: string; existeEstadoCuentaNacional: string; existeEstadoCuentaInternacional: string; }
 interface ApiTransaccionFacturada { fechaTransaccionString: string; montoTransaccion: number; descripcion: string; cuotas: string; grupo: string; }
@@ -209,8 +209,38 @@ function cartolaMovToMovement(mov: ApiCartolaMov): BankMovement {
   return { date: normalizeDate(mov.fechaContable), description: mov.descripcion.trim(), amount: mov.tipo === "cargo" ? -Math.abs(mov.monto) : Math.abs(mov.monto), balance: mov.saldo, source: MOVEMENT_SOURCE.account };
 }
 
-function facturadoToMovement(tx: ApiTransaccionFacturada, source: MovementSource, cardMask?: string): BankMovement {
-  return { date: normalizeDate(tx.fechaTransaccionString), description: tx.descripcion.trim(), amount: tx.grupo === "pagos" ? Math.abs(tx.montoTransaccion) : -Math.abs(tx.montoTransaccion), balance: 0, source, card: cardMask, installments: normalizeInstallments(tx.cuotas) };
+const ISO_4217_NUMERIC_CODES: Record<string, string> = {
+  "032": "ARS",
+  "152": "CLP",
+  "840": "USD",
+  "978": "EUR",
+  "986": "BRL",
+};
+
+export function currencyFromBchileCode(code: number | string | undefined): string | undefined {
+  if (code === undefined || code === null || code === "") return undefined;
+  const normalized = String(code).trim().padStart(3, "0");
+  const currency = ISO_4217_NUMERIC_CODES[normalized];
+  return currency && currency !== "CLP" ? currency : undefined;
+}
+
+export function noFacturadoToMovement(mov: ApiMovNoFactur, cardMask?: string): BankMovement {
+  const amount = mov.montoCompra < 0 ? Math.abs(mov.montoCompra) : -Math.abs(mov.montoCompra);
+  const currency = currencyFromBchileCode(mov.codigoMonedaOrigen);
+  return {
+    date: normalizeDate(mov.fechaTransaccionString),
+    description: mov.glosaTransaccion.trim(),
+    amount,
+    currency,
+    balance: 0,
+    source: MOVEMENT_SOURCE.credit_card_unbilled,
+    card: cardMask,
+    installments: normalizeInstallments(mov.despliegueCuotas),
+  };
+}
+
+export function facturadoToMovement(tx: ApiTransaccionFacturada, source: MovementSource, cardMask?: string, currency?: string): BankMovement {
+  return { date: normalizeDate(tx.fechaTransaccionString), description: tx.descripcion.trim(), amount: tx.grupo === "pagos" ? Math.abs(tx.montoTransaccion) : -Math.abs(tx.montoTransaccion), currency, balance: 0, source, card: cardMask, installments: normalizeInstallments(tx.cuotas) };
 }
 
 async function fetchAccountMovements(page: Page, products: ApiProduct[], fullName: string, rut: string, debugLog: string[]): Promise<{ movements: BankMovement[]; balance?: number }> {
@@ -290,8 +320,7 @@ async function fetchCreditCardData(page: Page, fullName: string, debugLog: strin
       if (nextDue) ccEntry.nextDueDate = normalizeDate(nextDue);
       const unbilledMovs: BankMovement[] = [];
       for (const mov of nf.listaMovNoFactur) {
-        const amount = mov.montoCompra < 0 ? Math.abs(mov.montoCompra) : -Math.abs(mov.montoCompra);
-        unbilledMovs.push({ date: normalizeDate(mov.fechaTransaccionString), description: mov.glosaTransaccion.trim(), amount, balance: 0, source: MOVEMENT_SOURCE.credit_card_unbilled, card: mascara, installments: normalizeInstallments(mov.despliegueCuotas) });
+        unbilledMovs.push(noFacturadoToMovement(mov, mascara));
       }
       // periodExpenses: suma de cargos no facturados (montos negativos → gastos)
       const periodExpensesRaw = nf.gastosPeriodo ?? nf.montoGastosPeriodo;
@@ -314,7 +343,7 @@ async function fetchCreditCardData(page: Page, fullName: string, debugLog: strin
             apiPost<ApiResumenFacturado>(page, "tarjetas/estadocuenta/nacional/resumen-por-fecha", resumenBody),
             apiPost<ApiResumenFacturado>(page, "tarjetas/estadocuenta/internacional/resumen-por-fecha", resumenBody),
           ]);
-          for (const r of [nacR, intR]) {
+          for (const [r, currency] of [[nacR, undefined], [intR, "USD"]] as const) {
             if (r.status !== "fulfilled" || !r.value.existeEstadoCuenta) continue;
             const res = r.value;
 
@@ -326,7 +355,7 @@ async function fetchCreditCardData(page: Page, fullName: string, debugLog: strin
               // Skip section-subtotal rows (e.g. "TOTAL PAGOS A LA CUENTA").
               const desc = tx.descripcion.trim().toUpperCase();
               if (desc.startsWith("TOTAL ") && desc.endsWith("A LA CUENTA")) continue;
-              movements.push(facturadoToMovement(tx, MOVEMENT_SOURCE.credit_card_billed, mascara));
+              movements.push(facturadoToMovement(tx, MOVEMENT_SOURCE.credit_card_billed, mascara, currency));
             }
 
             // Override nextBillingDate/nextDueDate with accurate date-format values from resumen
