@@ -86,7 +86,7 @@ Ejemplos:
   }
 
   // Get credentials from env
-  const prefix = bankId.toUpperCase();
+  const prefix = bank.id.toUpperCase();
   const rut = process.env[`${prefix}_RUT`];
   const password = process.env[`${prefix}_PASS`];
 
