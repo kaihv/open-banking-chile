@@ -1,4 +1,4 @@
-import bancosecurity from "./banks/bancosecurity.js";
+import security from "./banks/security.js";
 import bchile from "./banks/bchile.js";
 import bci from "./banks/bci.js";
 import bestado from "./banks/bestado.js";
@@ -13,7 +13,7 @@ import cencosud from "./banks/cencosud.js";
 
 /** Registro de todos los bancos disponibles */
 export const banks: Record<string, BankScraper> = {
-  bancosecurity,
+  security,
   bchile,
   bci,
   bestado,
@@ -40,7 +40,7 @@ export function getBank(id: string): BankScraper | undefined {
   return banks[id];
 }
 
-// Re-export types
+// Reexporta tipos
 export type {
   BankMovement,
   MovementSource,
@@ -54,7 +54,7 @@ export type {
 
 export { MOVEMENT_SOURCE, CARD_OWNER } from "./types.js";
 
-// Re-export individual banks for direct import
+// Reexporta bancos individuales para import directo
 export { default as bchile } from "./banks/bchile.js";
 export { default as bci } from "./banks/bci.js";
 export { default as bestado } from "./banks/bestado.js";
@@ -63,6 +63,6 @@ export { default as edwards } from "./banks/edwards.js";
 export { default as falabella } from "./banks/falabella.js";
 export { default as itau } from "./banks/itau.js";
 export { default as santander } from "./banks/santander.js";
-export { default as bancosecurity } from "./banks/bancosecurity.js";
+export { default as security } from "./banks/security.js";
 export { default as scotiabank } from "./banks/scotiabank.js";
 export { default as cencosud } from "./banks/cencosud.js";
