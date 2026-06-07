@@ -40,7 +40,7 @@ export function getBank(id: string): BankScraper | undefined {
   return banks[id];
 }
 
-// Re-export types
+// Reexporta tipos
 export type {
   BankMovement,
   MovementSource,
@@ -54,7 +54,7 @@ export type {
 
 export { MOVEMENT_SOURCE, CARD_OWNER } from "./types.js";
 
-// Re-export individual banks for direct import
+// Reexporta bancos individuales para import directo
 export { default as bchile } from "./banks/bchile.js";
 export { default as bci } from "./banks/bci.js";
 export { default as bestado } from "./banks/bestado.js";

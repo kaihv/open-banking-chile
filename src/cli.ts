@@ -60,7 +60,7 @@ Ejemplos:
     process.exit(0);
   }
 
-  // Parse --bank flag
+  // Lee flag --bank
   const bankIdx = args.indexOf("--bank");
   const bankId = bankIdx >= 0 ? args[bankIdx + 1] : undefined;
 
@@ -85,7 +85,7 @@ Ejemplos:
     process.exit(1);
   }
 
-  // Get credentials from env
+  // Lee credenciales desde variables de entorno
   const prefix = bank.id.toUpperCase();
   const rut = process.env[`${prefix}_RUT`];
   const password = process.env[`${prefix}_PASS`];
@@ -109,7 +109,7 @@ Ejemplos:
     );
   }
 
-  // Parse --owner flag
+  // Lee flag --owner
   const ownerIdx = args.indexOf("--owner");
   const ownerVal = ownerIdx >= 0 ? args[ownerIdx + 1]?.toUpperCase() : undefined;
   const owner = ownerVal === "T" || ownerVal === "A" || ownerVal === "B" ? ownerVal : undefined;
