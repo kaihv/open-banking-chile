@@ -283,6 +283,8 @@ Campos opcionales en `BankMovement`:
 - No hay analytics, telemetría, ni tracking.
 - Las credenciales se pasan por env vars, nunca se guardan en disco.
 - Los screenshots de debug pueden contener datos sensibles — no los compartas.
+- Chrome corre con su sandbox activo por defecto. Si ejecutas Node como root (Docker/CI), el proyecto agrega `--no-sandbox` automáticamente porque Chrome lo requiere, pero eso reduce el aislamiento del proceso.
+- En producción, prefiere correr el scraper con un usuario no-root.
 - Lee [SECURITY.md](SECURITY.md) para más detalles.
 
 ## Arquitectura
@@ -297,6 +299,7 @@ src/
   cli.ts                      — CLI entry point
   infrastructure/
     browser.ts                — Gestión centralizada del browser (launch, sesión, cleanup)
+    chrome-args.ts            — Flags compartidos de Chrome y sandbox root/no-root
     scraper-runner.ts         — Pipeline de ejecución (credenciales → browser → scrape → logout → resultado)
   actions/
     login.ts                  — Login genérico (RUT, password, submit, detección de errores)
@@ -381,6 +384,7 @@ interface BankScraper {
 | Problema              | Solución                                                                                       |
 | --------------------- | ---------------------------------------------------------------------------------------------- |
 | Chrome no encontrado  | Instala Chrome o usa `CHROME_PATH=/ruta/chrome`                                                |
+| Chrome sin sandbox    | Solo se usa automáticamente si Node corre como root. En producción usa un usuario no-root       |
 | 2FA / Clave dinámica  | Si aparece, apruébalo manualmente en tu banco y vuelve a intentar                              |
 | 0 movimientos         | Usa `--screenshots --pretty` y revisa el debug log                                             |
 | Login falla           | Verifica RUT y clave, prueba con `--headful`                                                   |
@@ -420,9 +424,13 @@ xvfb-run node tu-app.js
 **En Docker:**
 
 ```dockerfile
-RUN apt-get update && apt-get install -y xvfb google-chrome-stable
+RUN apt-get update && apt-get install -y xvfb google-chrome-stable \
+  && useradd -m scraper
+USER scraper
 CMD ["xvfb-run", "node", "server.js"]
 ```
+
+Si corres el contenedor como root, Chrome se iniciará con `--no-sandbox` para poder abrir. Funciona, pero es menos aislado que usar un usuario no-root.
 
 **En Mac/Windows** no necesitas nada extra — Chrome se abre y cierra automáticamente.
 

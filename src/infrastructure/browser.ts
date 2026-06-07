@@ -1,5 +1,6 @@
 import puppeteer, { type Browser, type Page } from "puppeteer-core";
 import { DebugLog, findChrome, saveScreenshot } from "../utils.js";
+import { buildChromeArgs, getChromeSandboxWarning } from "./chrome-args.js";
 
 export interface BrowserOptions {
   chromePath?: string;
@@ -19,15 +20,6 @@ export interface BrowserSession {
   /** Save a named screenshot (noop if screenshots disabled) */
   screenshot: (page: Page, name: string) => Promise<void>;
 }
-
-const DEFAULT_ARGS = [
-  "--no-sandbox",
-  "--disable-setuid-sandbox",
-  "--disable-dev-shm-usage",
-  "--disable-gpu",
-  "--window-size=1280,900",
-  "--disable-blink-features=AutomationControlled",
-];
 
 const DEFAULT_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -56,6 +48,8 @@ export async function launchBrowser(
 ): Promise<BrowserSession> {
   const { chromePath, headful, forceHeadful, extraArgs, viewport, onDebug } = options;
   const debugLog: string[] = onDebug ? new DebugLog(onDebug) : [];
+  const sandboxWarning = getChromeSandboxWarning();
+  if (sandboxWarning) debugLog.push(`  ${sandboxWarning}`);
 
   // Some banks (e.g. BancoEstado) block headless browsers via TLS fingerprinting
   // and require a visible Chrome window. On Linux this needs a display server.
@@ -81,7 +75,7 @@ export async function launchBrowser(
   const browser = await puppeteer.launch({
     executablePath,
     headless: forceHeadful ? false : !headful,
-    args: [...DEFAULT_ARGS, ...(extraArgs || [])],
+    args: buildChromeArgs({ extraArgs }),
   });
 
   const page = await browser.newPage();

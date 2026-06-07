@@ -8,6 +8,7 @@ Este proyecto maneja credenciales bancarias. La seguridad no es negociable.
 - **NUNCA** se envían credenciales ni datos a servidores externos
 - El scraper solo se comunica con el portal oficial del banco
 - No hay analytics, telemetría, ni tracking de ningún tipo
+- Chrome corre con sandbox activo salvo cuando Node corre como root; en ese caso se usan flags `--no-sandbox` porque Chrome lo exige, pero se recomienda correr como usuario no-root.
 
 ### 2. Credenciales en memoria, nunca en disco
 - Las credenciales se pasan via variables de entorno o parámetros
@@ -48,3 +49,4 @@ Responderemos dentro de 48 horas.
 - **2FA**: Si tu banco pide clave dinámica, el scraper no puede proceder. Esto es intencional — no intentamos bypassear seguridad bancaria.
 - **Sesiones**: No persistimos sesiones. Cada ejecución hace login completo.
 - **Rate limiting**: Si ejecutas el scraper muchas veces seguidas, el banco puede bloquear tu cuenta temporalmente. Recomendamos máximo 1 ejecución por hora.
+- **Chrome como root**: En Docker/CI root, Chrome puede necesitar `--no-sandbox`. Es compatible, pero menos aislado que correr el proceso con un usuario no-root.
