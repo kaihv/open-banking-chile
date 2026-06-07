@@ -47,6 +47,7 @@ También en esta versión: utilidades compartidas (`parseChileanAmount`, `normal
 | Banco                             | ID           | Estado       |
 | --------------------------------- | ------------ | ------------ |
 | Banco Falabella (cuenta + CMR TC) | `falabella`  | ✅ Funcional |
+| Banco Security (cuenta + TC)      | `security`   | ✅ Funcional |
 | Banco BICE                        | `bice`       | ✅ Funcional |
 | Banco Santander                   | `santander`  | ✅ Funcional |
 | Banco Edwards                     | `edwards`    | ✅ Funcional |
@@ -96,6 +97,14 @@ Configura tu archivo `.env` con tus credenciales:
 FALABELLA_RUT=12345678-9
 FALABELLA_PASS=tu_clave
 
+# Banco Security
+SECURITY_RUT=12345678-9
+SECURITY_PASS=tu_clave
+## Opcional:
+SECURITY_MONTHS=1
+SECURITY_TC_PERIODS=6
+SECURITY_2FA_TIMEOUT_SEC=240
+
 # Banco BICE
 BICE_RUT=12345678-9
 BICE_PASS=tu_clave
@@ -134,6 +143,7 @@ Ejecuta la librería con el comando `npx`, `dotenv` incluirá automáticamente l
 
 # Consultar banco
 npx open-banking-chile --bank falabella --pretty
+npx open-banking-chile --bank security --pretty
 npx open-banking-chile --bank santander --pretty
 npx open-banking-chile --bank bchile --pretty
 npx open-banking-chile --bank edwards --pretty
@@ -272,10 +282,12 @@ Campos opcionales en `BankMovement`:
 
 | Campo          | Descripción                                                                 |
 | -------------- | --------------------------------------------------------------------------- |
-| `owner`        | `"titular"` o `"adicional"` (Falabella CMR)                                 |
-| `card`         | Máscara de la tarjeta, ej: `"****8335"` (BChile, Falabella)                 |
+| `owner`        | `"titular"` o `"adicional"` (Falabella CMR; Security cuando distingue tarjeta principal/adicional) |
+| `card`         | Máscara de la tarjeta, ej: `"****8335"` (BChile, Falabella, Security)       |
 | `installments` | Cuotas en formato `NN/NN`, ej: `"02/06"` = cuota 2 de 6                     |
-| `totalAmount`  | Monto total de la compra cuando es en cuotas (Falabella)                    |
+| `totalAmount`  | Monto total de la compra cuando es en cuotas (Falabella, Security)          |
+
+Banco Security extrae cuenta corriente, movimientos no facturados de tarjeta, estados de cuenta facturados nacional/internacional por periodo y separa tarjetas adicionales cuando el portal identifica movimientos por tarjeta. `SECURITY_TC_PERIODS` controla cuántos periodos facturados por moneda se consultan.
 
 ## Seguridad
 
@@ -308,6 +320,7 @@ src/
     two-factor.ts             — Detección y espera de 2FA
   banks/
     falabella.ts              — Banco Falabella + CMR (cuenta + tarjeta de crédito)
+    security.ts               — Banco Security
     bestado.ts                — Banco Estado (CuentaRUT, requiere headful)
     bchile.ts                 — Banco de Chile
     bci.ts                    — BCI (iframes + BCI Pass)
