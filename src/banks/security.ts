@@ -8,7 +8,7 @@ import { fillRut, fillPassword, clickSubmit, detectLoginError } from "../actions
 import { dismissBanners } from "../actions/navigation.js";
 import { detect2FA, waitFor2FA } from "../actions/two-factor.js";
 
-// ─── Constants ────────────────────────────────────────────────────
+// ─── Constantes ───────────────────────────────────────────────────
 
 const BANK_ID = "security";
 const BANK_URL = "https://personas.bancosecurity.cl/";
@@ -21,7 +21,7 @@ const LOGIN_SELECTORS = {
   passwordSelectors: ["#clave", 'input[name="clave"]'],
   submitSelectors: ["#btnIngresar"],
   submitTexts: ["ingresar"],
-  // Portal expects formatted RUT: "12.345.678-9"
+  // El portal espera el RUT con formato: "12.345.678-9"
   rutFormat: "formatted" as const,
 };
 
@@ -57,7 +57,7 @@ interface SecurityStatementForm {
   kind: "national" | "international";
 }
 
-// ─── Helpers ─────────────────────────────────────────────────────
+// ─── Ayudantes ────────────────────────────────────────────────────
 
 async function waitForDashboard(page: Page): Promise<void> {
   const start = Date.now();
@@ -70,13 +70,13 @@ async function waitForDashboard(page: Page): Promise<void> {
       }, keywords);
       if (found) break;
     } catch {
-      // Login redirects can destroy the current execution context between polls.
+      // Las redirecciones del login pueden cortar el contexto entre intentos.
     }
     await delay(1500);
   }
 }
 
-/** Finds an element by visible text and clicks it with Puppeteer's native click (triggers real browser events). */
+/** Busca un elemento por texto visible y lo clickea con Puppeteer para disparar eventos reales del navegador. */
 async function nativeClick(page: Page, texts: string[], selectors = "a, button, li, span, [role='menuitem']"): Promise<string | null> {
   const result = await page.evaluate((txts: string[], sels: string) => {
     for (const el of Array.from(document.querySelectorAll(sels))) {
@@ -180,7 +180,7 @@ async function extractMovements(page: Page): Promise<BankMovement[]> {
     if (frame !== page.mainFrame()) contexts.push(frame as unknown as { evaluate: Page["evaluate"] });
   }
   for (const ctx of contexts) {
-    try { allRaw.push(...(await extractFromContext(ctx))); } catch { /* detached */ }
+    try { allRaw.push(...(await extractFromContext(ctx))); } catch { /* contexto desconectado */ }
   }
 
   const seen = new Set<string>();
@@ -229,13 +229,13 @@ async function paginate(page: Page, debugLog: string[]): Promise<BankMovement[]>
   return deduplicateMovements(all);
 }
 
-// ─── Historical months (Cartola histórica via TXT) ───────────────
+// ─── Meses históricos (Cartola histórica vía TXT) ────────────────
 
 /**
- * Parses the fixed-width TXT format from Banco Security cartola histórica.
- * Lines starting with "2" are movement records:
- *   "2" + 10-char date (DD/MM/YYYY) + 50-char description + 9-char doc + 1-char type (C/A) + "+" + amount + balance
- * "C" = Cargo (debit → negative), "A" = Abono (credit → positive)
+ * Parsea el TXT de ancho fijo de la cartola histórica de Banco Security.
+ * Las líneas que parten con "2" son movimientos:
+ *   "2" + fecha de 10 caracteres (DD/MM/YYYY) + descripción de 50 + documento de 9 + tipo (C/A) + "+" + monto + saldo
+ * "C" = Cargo (débito, negativo), "A" = Abono (crédito, positivo)
  */
 function parseTxtMovements(txt: string): BankMovement[] {
   const movements: BankMovement[] = [];
@@ -358,7 +358,7 @@ async function fetchHistoricalMonths(page: Page, months: number, debugLog: strin
   return all;
 }
 
-// ─── Credit cards ────────────────────────────────────────────────
+// ─── Tarjetas de crédito ─────────────────────────────────────────
 
 const MONTHS_ES: Record<string, string> = {
   ene: "01", enero: "01",
@@ -812,7 +812,7 @@ async function fetchCreditCards(page: Page, debugLog: string[]): Promise<CreditC
   return [...cards.values()];
 }
 
-// ─── Main scrape function ─────────────────────────────────────────
+// ─── Función principal del scraper ───────────────────────────────
 
 async function scrapeBancoSecurity(session: BrowserSession, options: ScraperOptions): Promise<ScrapeResult> {
   const { rut, password, onProgress } = options;
@@ -952,7 +952,7 @@ async function scrapeBancoSecurity(session: BrowserSession, options: ScraperOpti
   };
 }
 
-// ─── Export ───────────────────────────────────────────────────────
+// ─── Exportación ─────────────────────────────────────────────────
 
 const security: BankScraper = {
   id: BANK_ID,
