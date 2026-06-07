@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { chromium, type Browser, type Page } from "playwright-core";
+import { buildChromeArgs, getChromeSandboxWarning } from "../infrastructure/chrome-args.js";
 import type { BankMovement, BankScraper, CreditCardBalance, MovementSource, ScrapeResult, ScraperOptions } from "../types.js";
 import { MOVEMENT_SOURCE } from "../types.js";
 import { DebugLog, delay, deduplicateAcrossSources, deduplicateMovements, findChrome, monthYearLabel, normalizeDate, normalizeOwner, normalizeInstallments, parseChileanAmount } from "../utils.js";
@@ -16,6 +17,8 @@ const CMR_WAIT_MS = 30_000;
 async function launchPlaywright(options: ScraperOptions): Promise<{ browser: Browser; page: Page; debugLog: string[] }> {
   const { chromePath, headful, onDebug } = options;
   const debugLog: string[] = onDebug ? new DebugLog(onDebug) : [];
+  const sandboxWarning = getChromeSandboxWarning();
+  if (sandboxWarning) debugLog.push(`  ${sandboxWarning}`);
 
   const execPath = findChrome(chromePath);
   if (!execPath) {
@@ -29,14 +32,7 @@ async function launchPlaywright(options: ScraperOptions): Promise<{ browser: Bro
   const browser = await chromium.launch({
     executablePath: execPath,
     headless: !headful,
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-gpu",
-      "--disable-blink-features=AutomationControlled",
-      "--disable-notifications",
-    ],
+    args: buildChromeArgs({ includeWindowSize: false, extraArgs: ["--disable-notifications"] }),
   });
 
   const context = await browser.newContext({
