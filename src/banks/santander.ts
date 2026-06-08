@@ -28,6 +28,8 @@ const BANK_URL = "https://banco.santander.cl/personas";
 // visiting it first, those queries return empty.
 const CC_BILL_URL =
   "https://mibanco.santander.cl/UI.Web.HB/Private_new/frame/#/private/Saldos_TC/main/bill";
+const CC_DETAIL_URL =
+  "https://mibanco.santander.cl/UI.Web.HB/Private_new/frame/#/private/Saldos_TC/main/detail";
 
 // ─── API endpoint prefixes ───────────────────────────────────────
 const SANTANDER_CHECKING_API_PREFIX =
@@ -321,6 +323,94 @@ async function loadCreditCardDashboard(page: Page, debugLog: string[]): Promise<
   debugLog.push(ready ? "  CC dashboard loaded" : "  CC dashboard did not render cards");
   await delay(2500);
   return ready;
+}
+
+type Cupo = { available: number; used: number; total: number };
+
+/** Parses the "Cupo en Pesos / Dólares" block (Disponible/Utilizado/Autorizado). */
+function parseCupoBlock(text: string): { clp?: Cupo; usd?: Cupo } | null {
+  const idx = text.search(/Cupo en Pesos/i);
+  if (idx < 0) return null;
+  const t = text.slice(idx, idx + 500);
+  const clpNum = (s: string): number => parseInt(s.replace(/\./g, ""), 10);
+  const usdNum = (s: string): number => Math.round(parseFloat(s.replace(/\./g, "").replace(",", ".")));
+  const clpM = t.match(
+    /Cupo en Pesos\s*Disponible\s*\$?\s*([\d.]+)\s*Utilizado\s*\$?\s*([\d.]+)\s*Autorizado\s*\$?\s*([\d.]+)/i,
+  );
+  const usdM = t.match(
+    /Cupo en D[oó]lares\s*Disponible\s*USD\s*([\d.,]+)\s*Utilizado\s*USD\s*([\d.,]+)\s*Autorizado\s*USD\s*([\d.,]+)/i,
+  );
+  if (!clpM && !usdM) return null;
+  const out: { clp?: Cupo; usd?: Cupo } = {};
+  if (clpM) out.clp = { available: clpNum(clpM[1]), used: clpNum(clpM[2]), total: clpNum(clpM[3]) };
+  if (usdM) out.usd = { available: usdNum(usdM[1]), used: usdNum(usdM[2]), total: usdNum(usdM[3]) };
+  return out;
+}
+
+/**
+ * Fills each card's used/total credit (Utilizado/Autorizado, CLP + USD) by
+ * scraping the card detail page, which shows one card's cupo at a time. Each
+ * scraped block is matched back to a card by its Disponible amount (already known
+ * per card from the carousel), so attribution is robust regardless of which card
+ * the detail page happens to show.
+ */
+async function enrichCardCupos(
+  page: Page,
+  cards: CreditCardBalance[],
+  debugLog: string[],
+): Promise<void> {
+  try {
+    await page.goto(CC_DETAIL_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    try {
+      await page.waitForFunction(() => /Autorizado/i.test(document.body.innerText), {
+        timeout: 25_000,
+      });
+    } catch {
+      debugLog.push("  cupo detail did not render");
+      return;
+    }
+    await delay(1500);
+
+    const seen = new Set<string>();
+    for (let i = 0; i < 4; i++) {
+      const text = await page.evaluate(() => document.body.innerText.replace(/\s+/g, " ").trim());
+      const block = parseCupoBlock(text);
+      if (block) {
+        const key = JSON.stringify(block);
+        if (!seen.has(key)) {
+          seen.add(key);
+          const card = cards.find(
+            (c) =>
+              (block.clp && c.national?.available === block.clp.available) ||
+              (block.usd && c.international?.available === block.usd.available),
+          );
+          if (card) {
+            if (block.clp) card.national = block.clp;
+            if (block.usd) card.international = { ...block.usd, currency: "USD" };
+            debugLog.push(
+              `  cupo ${card.label}: utilizado CLP ${block.clp?.used ?? "—"}, USD ${block.usd?.used ?? "—"}`,
+            );
+          }
+        }
+      }
+      const moved = await page.evaluate(() => {
+        let ok = false;
+        document.querySelectorAll("*").forEach((e) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const sw = (e as any).swiper;
+          if (sw?.slideNext) {
+            sw.slideNext();
+            ok = true;
+          }
+        });
+        return ok;
+      });
+      if (!moved) break;
+      await delay(4000);
+    }
+  } catch (err) {
+    debugLog.push(`  cupo enrich error: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 /**
@@ -779,6 +869,12 @@ async function scrapeSantander(
   debugLog.push(`8. Extracted ${movements.length} movement(s)`);
   progress(`Listo — ${movements.length} movimientos totales`);
   debugLog.push(balance !== undefined ? `9. Balance: $${balance.toLocaleString("es-CL")}` : "9. Balance not found");
+
+  // Enrich each card with used/total credit (Utilizado/Autorizado) scraped from
+  // the card detail page, matched to the right card by its Disponible amount.
+  if (creditCards.length > 0) {
+    await enrichCardCupos(page, creditCards, debugLog);
+  }
 
   await doSave(page, "05-final");
   const ss = doScreenshots ? ((await page.screenshot({ encoding: "base64", fullPage: true })) as string) : undefined;
