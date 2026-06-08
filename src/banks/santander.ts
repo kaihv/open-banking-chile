@@ -11,11 +11,17 @@ import { clickByText, clickSidebarItem, dismissBanners, clickWidget } from "../a
 import { extractAccountMovements } from "../actions/extraction.js";
 import { paginateAndExtract } from "../actions/pagination.js";
 import { extractBalance } from "../actions/balance.js";
-import { clickTcTab, extractCreditCardMovements } from "../actions/credit-card.js";
+import { clickTcTab } from "../actions/credit-card.js";
 
 // ─── Santander-specific constants ────────────────────────────────────
 
 const BANK_URL = "https://banco.santander.cl/personas";
+
+// Credit-card dashboard (card carousel). Loading this page populates the card
+// context that the "por facturar" / "facturados" tab queries depend on — without
+// visiting it first, those queries return empty.
+const CC_BILL_URL =
+  "https://mibanco.santander.cl/UI.Web.HB/Private_new/frame/#/private/Saldos_TC/main/bill";
 
 // ─── API endpoint prefixes ───────────────────────────────────────
 const SANTANDER_CHECKING_API_PREFIX =
@@ -280,6 +286,119 @@ async function navigateToMovements(page: Page, debugLog: string[]): Promise<void
   }
 }
 
+/** Resolves once a new response has been captured for `id` (beyond `sinceCount`). */
+async function waitForNewCapture(
+  interceptor: { getAll(id: string): unknown[] },
+  id: string,
+  sinceCount: number,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (interceptor.getAll(id).length > sinceCount) return true;
+    await delay(200);
+  }
+  return false;
+}
+
+/**
+ * Loads the credit-card dashboard and waits for the card carousel to render.
+ * This populates the card context the tab queries depend on. Returns false if
+ * the carousel never renders.
+ */
+async function loadCreditCardDashboard(page: Page, debugLog: string[]): Promise<boolean> {
+  await page.goto(CC_BILL_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
+  const cardsReady = async (): Promise<boolean> => {
+    try {
+      await page.waitForFunction(
+        () => {
+          const a = document.querySelector(".swiper-slide-active") as HTMLElement | null;
+          return !!a && /Cupo|\$\s?\d/.test(a.innerText);
+        },
+        { timeout: 30_000 },
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  let ready = await cardsReady();
+  if (!ready) {
+    await page.goto(CC_BILL_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    ready = await cardsReady();
+  }
+  debugLog.push(ready ? "  CC dashboard loaded" : "  CC dashboard did not render cards");
+  await delay(2500);
+  return ready;
+}
+
+/**
+ * Slides through every card in the carousel. Activating a card is what fires its
+ * `consultaUltimosMovimientos` ("no facturados") query — opening the tab page
+ * alone does not. The interceptor captures the responses as they arrive.
+ */
+async function activateAllCards(page: Page, debugLog: string[]): Promise<void> {
+  const slideCount = await page.evaluate(() => {
+    let n = 0;
+    document.querySelectorAll("*").forEach((e) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sw = (e as any).swiper;
+      if (sw) n = Math.max(n, sw.slides?.length || 0);
+    });
+    return n || document.querySelectorAll(".swiper-slide:not(.swiper-slide-duplicate)").length || 1;
+  });
+
+  const activeKey = async (): Promise<string> =>
+    page.evaluate(() => {
+      const t =
+        (document.querySelector(".swiper-slide-active") as HTMLElement | null)?.innerText
+          .replace(/\s+/g, " ")
+          .trim() || "";
+      const last4 = t.match(/\*\s?(\d{4})/)?.[1];
+      return last4 ? `****${last4}` : t.split(/Cupo/i)[0].trim();
+    });
+
+  const seen = new Set<string>();
+  for (let i = 0; i < Math.max(slideCount, 1) + 1; i++) {
+    const key = (await activeKey()) || `slide-${i}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      debugLog.push(`  card activated: ${key}`);
+      await delay(3000); // let the per-card query fire and land
+    }
+    const moved = await page.evaluate(() => {
+      let ok = false;
+      document.querySelectorAll("*").forEach((e) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const sw = (e as any).swiper;
+        if (sw?.slideNext) {
+          sw.slideNext();
+          ok = true;
+        }
+      });
+      return ok;
+    });
+    if (!moved) break;
+    await delay(3000);
+    if (seen.has(await activeKey())) break; // cycled back to a seen card
+  }
+}
+
+/**
+ * Collapses identical captured responses. Santander's credit-card queries can
+ * fire more than once for the same card, producing byte-identical responses;
+ * distinct cards produce distinct responses and are preserved.
+ */
+function dedupeCaptures(captures: unknown[]): unknown[] {
+  const seen = new Set<string>();
+  return captures.filter((c) => {
+    const key = JSON.stringify(c);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 async function navigateToCreditCardSection(page: Page, debugLog: string[]): Promise<boolean> {
   // Open Tarjetas submenu
   const tarjetasClicked = await clickSidebarItem(
@@ -465,40 +584,39 @@ async function scrapeSantander(
   }
   movements = deduplicateMovements(movements);
 
-  // 7b. Credit card movements
-  debugLog.push("7b. Navigating to credit card movements...");
+  // 7b. Credit card movements.
+  //  - "No facturados" fire per card when the card is activated in the carousel,
+  //    so we load the dashboard and slide through every card.
+  //  - "Facturados" fire from the "movimientos facturados" tab.
+  // A query can fire more than once for the same card, so we dedupe identical
+  // responses before parsing (CC movements have balance=0 and are intentionally
+  // NOT deduped downstream — two identical real charges are both valid, so
+  // collapsing must happen at the response level, not the row level).
+  debugLog.push("7b. Extracting credit card movements...");
   progress("Extrayendo movimientos de tarjeta de crédito...");
-  const tcReady = await navigateToCreditCardSection(page, debugLog);
-  if (tcReady) {
-    if (await clickTcTab(page, "movimientos por facturar")) {
-      const unbilledCaptures = await interceptor.waitFor("santander-credit-card-unbilled", 10_000);
-      if (unbilledCaptures.length > 0) {
-        const unbilledMovements = normalizeSantanderUnbilledApiMovements(unbilledCaptures);
-        movements.push(...unbilledMovements);
-        debugLog.push(`  CC API (unbilled): ${unbilledMovements.length} movement(s)`);
-      } else {
-        debugLog.push("  CC API (unbilled): no data, falling back to HTML extraction");
-        const unbilled = await extractCreditCardMovements(page, "unbilled");
-        movements.push(...unbilled);
-        debugLog.push(`  TC por facturar: ${unbilled.length} movement(s)`);
-      }
-    }
-    if (await clickTcTab(page, "movimientos facturados")) {
-      const billedCaptures = await interceptor.waitFor("santander-credit-card-billed", 10_000);
-      if (billedCaptures.length > 0) {
-        const billedMovements = normalizeSantanderBilledApiMovements(billedCaptures);
-        movements.push(...billedMovements);
-        debugLog.push(`  CC API (billed): ${billedMovements.length} movement(s)`);
-      } else {
-        debugLog.push("  CC API (billed): no data, falling back to HTML extraction");
-        const billed = await extractCreditCardMovements(page, "billed");
-        movements.push(...billed);
-        debugLog.push(`  TC facturados: ${billed.length} movement(s)`);
-      }
-    }
-  } else {
-    debugLog.push("  Could not open credit card section.");
+
+  // No facturados: load the card dashboard and activate each card, which fires
+  // the per-card consultaUltimosMovimientos query. Collect all captures at the end.
+  if (await loadCreditCardDashboard(page, debugLog)) {
+    await activateAllCards(page, debugLog);
+    await delay(3000); // let the last card's query land
+    const caps = dedupeCaptures(interceptor.getAll("santander-credit-card-unbilled"));
+    const unbilled = normalizeSantanderUnbilledApiMovements(caps);
+    movements.push(...unbilled);
+    debugLog.push(`  CC (no facturados): ${unbilled.length} movement(s)`);
   }
+
+  // Facturados: the "movimientos facturados" tab fires the estadoCuenta query.
+  const tcReady = await navigateToCreditCardSection(page, debugLog);
+  if (tcReady && (await clickTcTab(page, "movimientos facturados"))) {
+    const before = interceptor.getAll("santander-credit-card-billed").length;
+    await waitForNewCapture(interceptor, "santander-credit-card-billed", before, 10000);
+    const caps = dedupeCaptures(interceptor.getAll("santander-credit-card-billed"));
+    const billedMovements = normalizeSantanderBilledApiMovements(caps);
+    movements.push(...billedMovements);
+    debugLog.push(`  CC (facturados): ${billedMovements.length} movement(s)`);
+  }
+
   movements = deduplicateMovements(movements);
 
   // 8. Balance
