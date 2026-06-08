@@ -31,6 +31,8 @@ export interface BankMovement {
   owner?: CardOwner;
   /** Identificador de la tarjeta (ej: "****8335") — útil cuando hay múltiples tarjetas */
   card?: string;
+  /** Moneda del movimiento (ej: "CLP", "USD") — útil cuando una tarjeta opera en varias */
+  currency?: string;
   /** Cuotas (ej: "01/01", "02/06") */
   installments?: string;
   /** Monto total de la compra (distinto de amount cuando es en cuotas) */
