@@ -333,7 +333,9 @@ function parseCupoBlock(text: string): { clp?: Cupo; usd?: Cupo } | null {
   if (idx < 0) return null;
   const t = text.slice(idx, idx + 500);
   const clpNum = (s: string): number => parseInt(s.replace(/\./g, ""), 10);
-  const usdNum = (s: string): number => Math.round(parseFloat(s.replace(/\./g, "").replace(",", ".")));
+  // Keep USD cents (Chilean format uses "." for thousands, "," for decimals).
+  const usdNum = (s: string): number =>
+    Math.round(parseFloat(s.replace(/\./g, "").replace(",", ".")) * 100) / 100;
   const clpM = t.match(
     /Cupo en Pesos\s*Disponible\s*\$?\s*([\d.]+)\s*Utilizado\s*\$?\s*([\d.]+)\s*Autorizado\s*\$?\s*([\d.]+)/i,
   );
@@ -460,7 +462,7 @@ function parseCardSlide(text: string): {
     last4,
     name,
     availCLP: clp ? parseInt(clp.replace(/\./g, ""), 10) : null,
-    availUSD: usd ? Math.round(parseFloat(usd.replace(/\./g, "").replace(",", "."))) : null,
+    availUSD: usd ? Math.round(parseFloat(usd.replace(/\./g, "").replace(",", ".")) * 100) / 100 : null,
   };
 }
 
