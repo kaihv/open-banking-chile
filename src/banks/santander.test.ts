@@ -199,6 +199,19 @@ describe("normalizeSantanderUnbilledApiMovements", () => {
     expect(result[0].balance).toBe(0);
   });
 
+  it("keeps USD cents (comma decimals) instead of truncating to whole dollars", () => {
+    const capture = {
+      DATA: {
+        MatrizMovimientos: [
+          { Fecha: "02/06/2026", Comercio: "Netflix.com", Descripcion: "", Importe: "14,82", IndicadorDebeHaber: "D" },
+        ],
+      },
+    };
+    const result = normalizeSantanderUnbilledApiMovements([capture]);
+    expect(result).toHaveLength(1);
+    expect(result[0].amount).toBe(-14.82);
+  });
+
   it("parses a credit movement (IndicadorDebeHaber=H)", () => {
     const capture = {
       DATA: {
