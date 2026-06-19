@@ -53,6 +53,7 @@ También en esta versión: utilidades compartidas (`parseChileanAmount`, `normal
 | Scotiabank                        | `scotiabank` | ✅ Funcional |
 | Banco de Chile                    | `bchile`     | ✅ Funcional |
 | BCI                               | `bci`        | ✅ Funcional |
+| BCI Pyme (Banca Empresas)         | `bcipyme`    | ✅ Funcional |
 | Itaú                              | `itau`       | ✅ Funcional |
 | Banco Estado (CuentaRUT)          | `bestado`    | ✅ Funcional |
 | Tarjeta Cencosud                  | `cencosud`   | ✅ Funcional |
@@ -118,6 +119,10 @@ EDWARDS_PASS=tu_clave
 # Itaú
 ITAU_RUT=12345678-9
 ITAU_PASS=tu_clave
+
+# BCI Pyme (Banca Empresas)
+BCIPYME_RUT=12345678-9
+BCIPYME_PASS=tu_clave
 
 # Banco Estado
 BESTADO_RUT=12345678-9
@@ -311,6 +316,7 @@ src/
     bestado.ts                — Banco Estado (CuentaRUT, requiere headful)
     bchile.ts                 — Banco de Chile
     bci.ts                    — BCI (iframes + BCI Pass)
+    bci-pyme.ts               — BCI Pyme / Banca Empresas (portal OSS, API JSON)
     bice.ts                   — Banco BICE
     cencosud.ts               — Tarjeta Cencosud (hCaptcha intermitente, requiere --headful si aparece)
     edwards.ts                — Banco Edwards
@@ -386,6 +392,27 @@ interface BankScraper {
 | Login falla           | Verifica RUT y clave, prueba con `--headful`                                                   |
 | BancoEstado bloqueado | BancoEstado bloquea headless (TLS fingerprinting). Siempre abre Chrome visible. Ver nota abajo |
 | Cencosud pide CAPTCHA | Ocurre ocasionalmente. En headless retorna error — reintenta con `--headful` para resolverlo manualmente |
+
+### BCI Pyme (Banca Empresas)
+
+`bcipyme` es independiente de `bci` (personas): apunta al portal Pyme
+(`banco-en-linea/pyme`), que tras el login redirige al portal OSS
+(`oss.bci.cl`), una SPA alimentada por una API REST JSON. El scraper
+intercepta la API en lugar de raspar tablas:
+
+- Cuentas y saldos desde `ms-oss-cuentas/v2/cuentas`.
+- Movimientos desde `bff-oss-resumen-cta/.../cuentas/movimientos`. La UI
+  solo solicita los últimos 100 movimientos; el scraper captura esa
+  request y la re-ejecuta con un rango amplio para traer todo el
+  historial disponible (varios años, según la antigüedad de la cuenta).
+
+```bash
+node dist/cli.js --bank bcipyme --pretty
+```
+
+> Probado con un perfil de **una sola cuenta corriente**. El soporte
+> multi-cuenta está implementado (prefija la descripción con la cuenta de
+> origen) pero aún no validado contra un login Pyme con varias cuentas.
 
 ### BancoEstado y modo headless
 
