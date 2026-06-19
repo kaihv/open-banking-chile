@@ -2,7 +2,9 @@
 import { config } from 'dotenv';
 import { banks, listBanks, getBank } from "./index.js";
 import { Spinner } from "./utils.js";
-config();
+// quiet: true evita que dotenv imprima su banner en stdout, que corrompía
+// la salida JSON (ej: `--bank x --pretty | jq`).
+config({ quiet: true });
 
 async function main() {
   const args = process.argv.slice(2);
@@ -29,6 +31,7 @@ Opciones:
   --headful        Abrir Chrome visible (para debugging)
   --pretty         Formatear JSON con indentación
   --movements      Solo imprimir movimientos (sin metadata)
+  --details        Incluir el detalle ampliado de cada movimiento (BCI Pyme)
   --owner <T|A|B>  Filtro Titular/Adicional para TC (default: B = todos)
   --help, -h       Mostrar esta ayuda
 
@@ -126,6 +129,7 @@ Ejemplos:
     chromePath: process.env.CHROME_PATH,
     saveScreenshots: flags.has("--screenshots"),
     headful: flags.has("--headful"),
+    details: flags.has("--details"),
     ...(owner && { owner }),
     onProgress: isTTY ? (step) => spinner.update(step) : undefined,
   });

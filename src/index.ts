@@ -1,6 +1,7 @@
 import bancosecurity from "./banks/bancosecurity.js";
 import bchile from "./banks/bchile.js";
 import bci from "./banks/bci.js";
+import bciPyme from "./banks/bci-pyme.js";
 import bestado from "./banks/bestado.js";
 import bice from "./banks/bice.js";
 import edwards from "./banks/edwards.js";
@@ -16,6 +17,7 @@ export const banks: Record<string, BankScraper> = {
   bancosecurity,
   bchile,
   bci,
+  bcipyme: bciPyme,
   bestado,
   bice,
   edwards,
@@ -57,6 +59,7 @@ export { MOVEMENT_SOURCE, CARD_OWNER } from "./types.js";
 // Re-export individual banks for direct import
 export { default as bchile } from "./banks/bchile.js";
 export { default as bci } from "./banks/bci.js";
+export { default as bciPyme } from "./banks/bci-pyme.js";
 export { default as bestado } from "./banks/bestado.js";
 export { default as bice } from "./banks/bice.js";
 export { default as edwards } from "./banks/edwards.js";

@@ -35,6 +35,13 @@ export interface BankMovement {
   installments?: string;
   /** Monto total de la compra (distinto de amount cuando es en cuotas) */
   totalAmount?: number;
+  /**
+   * Detalle ampliado del movimiento (el contenido del "+" en la UI del banco):
+   * pares etiqueta/valor tal cual los entrega el portal (ej: RUT destinatario,
+   * cuenta de destino, banco, comentario, código de transacción). Solo se
+   * llena cuando el scraper se ejecuta con la opción `details`.
+   */
+  details?: Array<{ label: string; value: string }>;
 }
 
 /** Saldo y movimientos de una cuenta bancaria */
@@ -125,6 +132,11 @@ export interface ScraperOptions extends BankCredentials {
   saveScreenshots?: boolean;
   /** Si es true, usa headless: false (para debugging visual) */
   headful?: boolean;
+  /**
+   * Si es true, incluye el detalle ampliado de cada movimiento en
+   * `BankMovement.details` (cuando el banco lo soporta). Default: false.
+   */
+  details?: boolean;
   /** Filtro Titular/Adicional para TC (ej: "T" = titular, "A" = adicional, "B" = todos). Default: "B" */
   owner?: "T" | "A" | "B";
   /** Callback de progreso para mostrar estado al usuario */
