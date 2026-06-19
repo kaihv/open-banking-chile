@@ -56,6 +56,9 @@ interface OssMovimiento {
   monto?: string;           // "36850.0000"
   saldoContable?: number;
   tipo?: string;            // 'C' = cargo, 'A' = abono
+  // Detalle del "+" en la UI: pares etiqueta/valor (RUT/cuenta/banco destino,
+  // comentario, código de transacción, etc.). Ya viene en esta misma respuesta.
+  detalleMovimiento?: Array<{ label?: string; value?: string }>;
 }
 
 interface OssMovimientosResponse {
@@ -86,20 +89,30 @@ function isoToday(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-export function normalizeMovements(resp: OssMovimientosResponse): BankMovement[] {
+export function normalizeMovements(
+  resp: OssMovimientosResponse,
+  includeDetails = false,
+): BankMovement[] {
   const out: BankMovement[] = [];
   for (const m of resp.movimientos ?? []) {
     const raw = Math.round(parseFloat(m.monto ?? "0"));
     if (!raw || isNaN(raw)) continue;
     const amount = m.tipo === "C" ? -raw : raw;
     const dateSrc = m.fechaContable ?? "";
-    out.push({
+    const mov: BankMovement = {
       date: isoToDate(dateSrc),
       description: (m.descripcion ?? "").trim(),
       amount,
       balance: typeof m.saldoContable === "number" ? m.saldoContable : 0,
       source: MOVEMENT_SOURCE.account,
-    });
+    };
+    if (includeDetails && Array.isArray(m.detalleMovimiento)) {
+      mov.details = m.detalleMovimiento.map((d) => ({
+        label: (d.label ?? "").replace(/:\s*$/, "").trim(),
+        value: (d.value ?? "").trim(),
+      }));
+    }
+    out.push(mov);
   }
   return out;
 }
@@ -220,6 +233,7 @@ async function triggerMovimientos(page: Page, debugLog: string[]): Promise<void>
 /** Re-ejecuta la API de movimientos para una cuenta con rango amplio. */
 async function fetchAccountMovements(
   page: Page, template: MovRequestTemplate, account: OssCuenta, debugLog: string[],
+  includeDetails = false,
 ): Promise<BankMovement[]> {
   const ossFrame = page.frames().find((f) => /oss\.bci\.cl/.test(f.url()));
   if (!ossFrame) {
@@ -266,7 +280,7 @@ async function fetchAccountMovements(
     return [];
   }
 
-  const movements = normalizeMovements(result.data);
+  const movements = normalizeMovements(result.data, includeDetails);
   if ((result.data.movimientos?.length ?? 0) >= MAX_RECORDS) {
     debugLog.push(`  WARN: cuenta ${account.numeroCuenta} alcanzó el tope de ${MAX_RECORDS} registros; podría haber más historial.`);
   }
@@ -277,7 +291,7 @@ async function fetchAccountMovements(
 // ─── Main scrape ─────────────────────────────────────────────────
 
 async function scrapeBciPyme(session: BrowserSession, options: ScraperOptions): Promise<ScrapeResult> {
-  const { rut, password, saveScreenshots: doScreenshots } = options;
+  const { rut, password, saveScreenshots: doScreenshots, details: includeDetails = false } = options;
   const { page, debugLog, screenshot: doSave } = session;
   const progress = options.onProgress || (() => {});
   const bank = "bcipyme";
@@ -324,7 +338,7 @@ async function scrapeBciPyme(session: BrowserSession, options: ScraperOptions): 
     if (movTemplate && accountList.length > 0) {
       const multi = accountList.length > 1;
       for (const acc of accountList) {
-        const movements = await fetchAccountMovements(page, movTemplate, acc, debugLog);
+        const movements = await fetchAccountMovements(page, movTemplate, acc, debugLog, includeDetails);
         const label = `Cuenta ${acc.tipoCuenta} ${acc.numeroCuenta}`;
         const prefixed = multi
           ? movements.map((m) => ({ ...m, description: `[${label}] ${m.description}`.trim() }))

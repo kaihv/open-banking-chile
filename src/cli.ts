@@ -31,6 +31,7 @@ Opciones:
   --headful        Abrir Chrome visible (para debugging)
   --pretty         Formatear JSON con indentación
   --movements      Solo imprimir movimientos (sin metadata)
+  --details        Incluir el detalle ampliado de cada movimiento (BCI Pyme)
   --owner <T|A|B>  Filtro Titular/Adicional para TC (default: B = todos)
   --help, -h       Mostrar esta ayuda
 
@@ -128,6 +129,7 @@ Ejemplos:
     chromePath: process.env.CHROME_PATH,
     saveScreenshots: flags.has("--screenshots"),
     headful: flags.has("--headful"),
+    details: flags.has("--details"),
     ...(owner && { owner }),
     onProgress: isTTY ? (step) => spinner.update(step) : undefined,
   });
