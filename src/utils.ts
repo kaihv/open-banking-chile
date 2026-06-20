@@ -115,8 +115,12 @@ export const MONTHS_MAP: Record<string, string> = {
 };
 
 /**
- * Parsea un monto en formato chileno a número entero.
- * Maneja: "$1.234.567", "-$50.000", "$1.234,56" (CLP con decimales).
+ * Parsea un monto en formato chileno a número.
+ * Maneja: "$1.234.567", "-$50.000", "$1.234,56", "USD 13,99".
+ *
+ * Conserva los decimales (centavos) cuando existen — necesario para montos en
+ * USD como "13,99". Los montos en CLP son enteros y no se ven afectados (el
+ * redondeo a 2 decimales sólo evita ruido de punto flotante).
  */
 export function parseChileanAmount(text: string): number {
   const clean = text.replace(/[^0-9.,-]/g, "");
@@ -124,7 +128,8 @@ export function parseChileanAmount(text: string): number {
   const isNegative = clean.startsWith("-") || text.includes("-$");
   // Remove thousand separators (dots), convert decimal comma to dot
   const normalized = clean.replace(/-/g, "").replace(/\./g, "").replace(",", ".");
-  const amount = parseInt(normalized, 10) || 0;
+  // parseFloat (not parseInt) so decimal amounts keep their cents.
+  const amount = Math.round((parseFloat(normalized) || 0) * 100) / 100;
   return isNegative ? -amount : amount;
 }
 

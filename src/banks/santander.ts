@@ -1,5 +1,11 @@
 import type { Frame, Page } from "puppeteer-core";
-import type { BankMovement, BankScraper, ScrapeResult, ScraperOptions } from "../types.js";
+import type {
+  BankMovement,
+  BankScraper,
+  CreditCardBalance,
+  ScrapeResult,
+  ScraperOptions,
+} from "../types.js";
 import { MOVEMENT_SOURCE } from "../types.js";
 import { deduplicateMovements, closePopups, delay, normalizeDate, parseChileanAmount } from "../utils.js";
 import { createInterceptor } from "../intercept.js";
@@ -11,11 +17,19 @@ import { clickByText, clickSidebarItem, dismissBanners, clickWidget } from "../a
 import { extractAccountMovements } from "../actions/extraction.js";
 import { paginateAndExtract } from "../actions/pagination.js";
 import { extractBalance } from "../actions/balance.js";
-import { clickTcTab, extractCreditCardMovements } from "../actions/credit-card.js";
+import { clickTcTab } from "../actions/credit-card.js";
 
 // ─── Santander-specific constants ────────────────────────────────────
 
 const BANK_URL = "https://banco.santander.cl/personas";
+
+// Credit-card dashboard (card carousel). Loading this page populates the card
+// context that the "por facturar" / "facturados" tab queries depend on — without
+// visiting it first, those queries return empty.
+const CC_BILL_URL =
+  "https://mibanco.santander.cl/UI.Web.HB/Private_new/frame/#/private/Saldos_TC/main/bill";
+const CC_DETAIL_URL =
+  "https://mibanco.santander.cl/UI.Web.HB/Private_new/frame/#/private/Saldos_TC/main/detail";
 
 // ─── API endpoint prefixes ───────────────────────────────────────
 const SANTANDER_CHECKING_API_PREFIX =
@@ -280,6 +294,309 @@ async function navigateToMovements(page: Page, debugLog: string[]): Promise<void
   }
 }
 
+/**
+ * Loads the credit-card dashboard and waits for the card carousel to render.
+ * This populates the card context the tab queries depend on. Returns false if
+ * the carousel never renders.
+ */
+async function loadCreditCardDashboard(page: Page, debugLog: string[]): Promise<boolean> {
+  await page.goto(CC_BILL_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
+  const cardsReady = async (): Promise<boolean> => {
+    try {
+      await page.waitForFunction(
+        () => {
+          const a = document.querySelector(".swiper-slide-active") as HTMLElement | null;
+          return !!a && /Cupo|\$\s?\d/.test(a.innerText);
+        },
+        { timeout: 30_000 },
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  let ready = await cardsReady();
+  if (!ready) {
+    await page.goto(CC_BILL_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    ready = await cardsReady();
+  }
+  debugLog.push(ready ? "  CC dashboard loaded" : "  CC dashboard did not render cards");
+  await delay(2500);
+  return ready;
+}
+
+type Cupo = { available: number; used: number; total: number };
+
+/** Parses the "Cupo en Pesos / Dólares" block (Disponible/Utilizado/Autorizado). */
+function parseCupoBlock(text: string): { clp?: Cupo; usd?: Cupo } | null {
+  const idx = text.search(/Cupo en Pesos/i);
+  if (idx < 0) return null;
+  const t = text.slice(idx, idx + 500);
+  const clpNum = (s: string): number => parseInt(s.replace(/\./g, ""), 10);
+  // Keep USD cents (Chilean format uses "." for thousands, "," for decimals).
+  const usdNum = (s: string): number =>
+    Math.round(parseFloat(s.replace(/\./g, "").replace(",", ".")) * 100) / 100;
+  const clpM = t.match(
+    /Cupo en Pesos\s*Disponible\s*\$?\s*([\d.]+)\s*Utilizado\s*\$?\s*([\d.]+)\s*Autorizado\s*\$?\s*([\d.]+)/i,
+  );
+  const usdM = t.match(
+    /Cupo en D[oó]lares\s*Disponible\s*USD\s*([\d.,]+)\s*Utilizado\s*USD\s*([\d.,]+)\s*Autorizado\s*USD\s*([\d.,]+)/i,
+  );
+  if (!clpM && !usdM) return null;
+  const out: { clp?: Cupo; usd?: Cupo } = {};
+  if (clpM) out.clp = { available: clpNum(clpM[1]), used: clpNum(clpM[2]), total: clpNum(clpM[3]) };
+  if (usdM) out.usd = { available: usdNum(usdM[1]), used: usdNum(usdM[2]), total: usdNum(usdM[3]) };
+  return out;
+}
+
+/**
+ * Fills each card's used/total credit (Utilizado/Autorizado, CLP + USD) by
+ * scraping the card detail page, which shows one card's cupo at a time. Each
+ * scraped block is matched back to a card by its Disponible amount (already known
+ * per card from the carousel), so attribution is robust regardless of which card
+ * the detail page happens to show.
+ */
+async function enrichCardCupos(
+  page: Page,
+  cards: CreditCardBalance[],
+  debugLog: string[],
+): Promise<void> {
+  try {
+    await page.goto(CC_DETAIL_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    try {
+      await page.waitForFunction(() => /Autorizado/i.test(document.body.innerText), {
+        timeout: 25_000,
+      });
+    } catch {
+      debugLog.push("  cupo detail did not render");
+      return;
+    }
+    await delay(1500);
+
+    const seen = new Set<string>();
+    for (let i = 0; i < 4; i++) {
+      const text = await page.evaluate(() => document.body.innerText.replace(/\s+/g, " ").trim());
+      const block = parseCupoBlock(text);
+      if (block) {
+        const key = JSON.stringify(block);
+        if (!seen.has(key)) {
+          seen.add(key);
+          const card = cards.find(
+            (c) =>
+              (block.clp && c.national?.available === block.clp.available) ||
+              (block.usd && c.international?.available === block.usd.available),
+          );
+          if (card) {
+            if (block.clp) card.national = block.clp;
+            if (block.usd) card.international = { ...block.usd, currency: "USD" };
+            debugLog.push(
+              `  cupo ${card.label}: utilizado CLP ${block.clp?.used ?? "—"}, USD ${block.usd?.used ?? "—"}`,
+            );
+          }
+        }
+      }
+      const moved = await page.evaluate(() => {
+        let ok = false;
+        document.querySelectorAll("*").forEach((e) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const sw = (e as any).swiper;
+          if (sw?.slideNext) {
+            sw.slideNext();
+            ok = true;
+          }
+        });
+        return ok;
+      });
+      if (!moved) break;
+      await delay(4000);
+    }
+  } catch (err) {
+    debugLog.push(`  cupo enrich error: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * Slides through every card in the carousel. Activating a card is what fires its
+ * `consultaUltimosMovimientos` ("no facturados") query — opening the tab page
+ * alone does not. The interceptor captures the responses as they arrive.
+ */
+// A captured credit-card API response, paired with the request's card account
+// (`cuenta`) and currency (`moneda`) so movements can be attributed per card.
+interface CcRaw {
+  endpoint: "unbilled" | "billed";
+  cuenta: string | null;
+  moneda: string | null;
+  body: unknown;
+}
+
+/** Pulls the card account + currency out of a CC request body. */
+function parseCcRequestMeta(pd: string | undefined): { cuenta: string | null; moneda: string | null } {
+  if (!pd) return { cuenta: null, moneda: null };
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const j = JSON.parse(pd) as Record<string, any>;
+    const e = (j.Entrada || j.INPUT || {}) as Record<string, unknown>;
+    const cuenta = (e.Cuenta || e.NumeroCuenta || e.Cuentas || null) as string | null;
+    const moneda = (e.Moneda || null) as string | null;
+    return {
+      cuenta: cuenta ? String(cuenta) : null,
+      moneda: moneda ? String(moneda).toUpperCase().slice(0, 3) : null,
+    };
+  } catch {
+    return { cuenta: null, moneda: null };
+  }
+}
+
+/** Parses card mask + available credit (CLP/USD) from the active carousel slide. */
+function parseCardSlide(text: string): {
+  last4: string | null;
+  name: string;
+  availCLP: number | null;
+  availUSD: number | null;
+} {
+  const last4 = text.match(/\*\s?(\d{4})/)?.[1] || null;
+  const name = text.split(/Cupo/i)[0].trim();
+  const clp = text.match(/\$\s?([\d.]+)/)?.[1];
+  const usd = text.match(/USD\s?([\d.,]+)/)?.[1];
+  return {
+    last4,
+    name,
+    availCLP: clp ? parseInt(clp.replace(/\./g, ""), 10) : null,
+    availUSD: usd ? Math.round(parseFloat(usd.replace(/\./g, "").replace(",", ".")) * 100) / 100 : null,
+  };
+}
+
+/**
+ * Slides through every card in the carousel. Activating a card fires its CLP
+ * "no facturados" query; clicking the Dólares toggle fires the USD one. Records,
+ * per card, the available credit (from the slide) and the card account numbers
+ * seen in the queries that fired while it was active, so movements can later be
+ * attributed to the right card.
+ */
+async function driveCardsAndCollect(
+  page: Page,
+  ccRaw: CcRaw[],
+  debugLog: string[],
+): Promise<{ cards: CreditCardBalance[]; cuentaToCard: Map<string, string> }> {
+  const slideCount = await page.evaluate(() => {
+    let n = 0;
+    document.querySelectorAll("*").forEach((e) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sw = (e as any).swiper;
+      if (sw) n = Math.max(n, sw.slides?.length || 0);
+    });
+    return n || document.querySelectorAll(".swiper-slide:not(.swiper-slide-duplicate)").length || 1;
+  });
+
+  const activeSlideText = (): Promise<string> =>
+    page.evaluate(
+      () =>
+        (document.querySelector(".swiper-slide-active") as HTMLElement | null)?.innerText
+          .replace(/\s+/g, " ")
+          .trim() || "",
+    );
+
+  const clickToggle = (label: RegExp): Promise<boolean> =>
+    page.evaluate((src: string) => {
+      const re = new RegExp(src, "i");
+      const els = Array.from(document.querySelectorAll("a,button,span,label,li"));
+      const el = els.find((e) => re.test((e as HTMLElement).innerText?.trim() || ""));
+      if (el) {
+        (el as HTMLElement).click();
+        return true;
+      }
+      return false;
+    }, label.source);
+
+  const cards: CreditCardBalance[] = [];
+  const cuentaToCard = new Map<string, string>();
+  const seen = new Set<string>();
+
+  for (let i = 0; i < Math.max(slideCount, 1) + 1; i++) {
+    const text = await activeSlideText();
+    const meta = parseCardSlide(text);
+    const key = meta.last4 ? `****${meta.last4}` : meta.name || `slide-${i}`;
+
+    if (!seen.has(key)) {
+      seen.add(key);
+      const before = ccRaw.length;
+      await delay(3000); // CLP query fires on activation
+      // Fire the USD query too (best-effort), then switch back to pesos.
+      if (await clickToggle(/^d[oó]lares$/)) {
+        await delay(4000);
+        await clickToggle(/^pesos$/);
+        await delay(1500);
+      }
+      // Attribute every card account seen during this card's activation window.
+      for (const r of ccRaw.slice(before)) {
+        if (r.cuenta) cuentaToCard.set(r.cuenta, key);
+      }
+      const card: CreditCardBalance = { label: meta.name ? `${meta.name} ${key}` : key };
+      if (meta.availCLP != null) card.national = { used: 0, available: meta.availCLP, total: 0 };
+      if (meta.availUSD != null)
+        card.international = { used: 0, available: meta.availUSD, total: 0, currency: "USD" };
+      cards.push(card);
+      debugLog.push(
+        `  card ${key}: ${meta.name} (cupo CLP ${meta.availCLP ?? "—"}, USD ${meta.availUSD ?? "—"})`,
+      );
+    }
+
+    const moved = await page.evaluate(() => {
+      let ok = false;
+      document.querySelectorAll("*").forEach((e) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const sw = (e as any).swiper;
+        if (sw?.slideNext) {
+          sw.slideNext();
+          ok = true;
+        }
+      });
+      return ok;
+    });
+    if (!moved) break;
+    await delay(3000);
+    const nextText = await activeSlideText();
+    const nextMeta = parseCardSlide(nextText);
+    const nextKey = nextMeta.last4 ? `****${nextMeta.last4}` : nextMeta.name;
+    if (seen.has(nextKey)) break; // cycled back to a seen card
+  }
+
+  return { cards, cuentaToCard };
+}
+
+/**
+ * Parses credit-card movements from collected responses for one endpoint,
+ * deduping identical responses (same card account + currency + body — the query
+ * can fire repeatedly) and tagging each movement with its card máscara (looked up
+ * from the request's account) and currency.
+ */
+function ccMovementsFrom(
+  ccRaw: CcRaw[],
+  endpoint: "unbilled" | "billed",
+  cuentaToCard: Map<string, string>,
+  normalize: (caps: unknown[]) => BankMovement[],
+  defaultCurrency?: string,
+): BankMovement[] {
+  const seen = new Set<string>();
+  const out: BankMovement[] = [];
+  for (const r of ccRaw) {
+    if (r.endpoint !== endpoint) continue;
+    const key = `${r.cuenta ?? ""}|${r.moneda ?? ""}|${JSON.stringify(r.body)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const card = r.cuenta ? cuentaToCard.get(r.cuenta) : undefined;
+    const currency = r.moneda ?? defaultCurrency;
+    for (const m of normalize([r.body])) {
+      out.push({
+        ...m,
+        ...(card ? { card } : {}),
+        ...(currency ? { currency } : {}),
+      });
+    }
+  }
+  return out;
+}
+
 async function navigateToCreditCardSection(page: Page, debugLog: string[]): Promise<boolean> {
   // Open Tarjetas submenu
   const tarjetasClicked = await clickSidebarItem(
@@ -325,12 +642,31 @@ async function scrapeSantander(
   const bank = "santander";
   const progress = onProgress || (() => {});
 
-  // Install API interceptor before first page.goto()
+  // Install API interceptor before first page.goto() for the checking-account API.
+  // Credit-card responses are handled separately (see ccRaw below) because we need
+  // their request bodies to attribute movements per card.
   const interceptor = await createInterceptor(page, [
     { id: "santander-checking", urlPrefix: SANTANDER_CHECKING_API_PREFIX },
-    { id: "santander-credit-card-unbilled", urlPrefix: SANTANDER_CC_API_PREFIX },
-    { id: "santander-credit-card-billed", urlPrefix: SANTANDER_CC_BILLED_API_PREFIX },
   ]);
+
+  // Node-level collector for credit-card responses. Unlike the in-page interceptor,
+  // this also captures the request body, which carries the card account (Cuenta)
+  // and currency (Moneda) needed to attribute movements to a specific card.
+  const ccRaw: CcRaw[] = [];
+  page.on("response", (resp) => {
+    const url = resp.url();
+    const endpoint = url.startsWith(SANTANDER_CC_API_PREFIX)
+      ? "unbilled"
+      : url.startsWith(SANTANDER_CC_BILLED_API_PREFIX)
+        ? "billed"
+        : null;
+    if (!endpoint) return;
+    const { cuenta, moneda } = parseCcRequestMeta(resp.request().postData());
+    void resp
+      .json()
+      .then((body) => ccRaw.push({ endpoint, cuenta, moneda, body }))
+      .catch(() => {});
+  });
 
   // 1. Navigate
   debugLog.push("1. Navigating to Santander...");
@@ -465,41 +801,61 @@ async function scrapeSantander(
   }
   movements = deduplicateMovements(movements);
 
-  // 7b. Credit card movements
-  debugLog.push("7b. Navigating to credit card movements...");
+  // 7b. Credit card movements, attributed per card and currency.
+  //  - "No facturados" fire per card (CLP on activation, USD on the Dólares
+  //    toggle) as we slide through the carousel.
+  //  - "Facturados" fire from the "movimientos facturados" tab.
+  // Responses are collected in ccRaw with their card account + currency; we
+  // dedupe identical responses (a query can fire repeatedly for the same card)
+  // and tag each movement with its card máscara and currency. Row-level dedup is
+  // not used since CC movements have balance=0 and identical real charges are both
+  // valid — collapsing must happen at the response level.
+  debugLog.push("7b. Extracting credit card movements...");
   progress("Extrayendo movimientos de tarjeta de crédito...");
-  const tcReady = await navigateToCreditCardSection(page, debugLog);
-  if (tcReady) {
-    if (await clickTcTab(page, "movimientos por facturar")) {
-      const unbilledCaptures = await interceptor.waitFor("santander-credit-card-unbilled", 10_000);
-      if (unbilledCaptures.length > 0) {
-        const unbilledMovements = normalizeSantanderUnbilledApiMovements(unbilledCaptures);
-        movements.push(...unbilledMovements);
-        debugLog.push(`  CC API (unbilled): ${unbilledMovements.length} movement(s)`);
-      } else {
-        debugLog.push("  CC API (unbilled): no data, falling back to HTML extraction");
-        const unbilled = await extractCreditCardMovements(page, "unbilled");
-        movements.push(...unbilled);
-        debugLog.push(`  TC por facturar: ${unbilled.length} movement(s)`);
-      }
-    }
-    if (await clickTcTab(page, "movimientos facturados")) {
-      const billedCaptures = await interceptor.waitFor("santander-credit-card-billed", 10_000);
-      if (billedCaptures.length > 0) {
-        const billedMovements = normalizeSantanderBilledApiMovements(billedCaptures);
-        movements.push(...billedMovements);
-        debugLog.push(`  CC API (billed): ${billedMovements.length} movement(s)`);
-      } else {
-        debugLog.push("  CC API (billed): no data, falling back to HTML extraction");
-        const billed = await extractCreditCardMovements(page, "billed");
-        movements.push(...billed);
-        debugLog.push(`  TC facturados: ${billed.length} movement(s)`);
-      }
-    }
-  } else {
-    debugLog.push("  Could not open credit card section.");
+
+  let creditCards: CreditCardBalance[] = [];
+  let cuentaToCard = new Map<string, string>();
+
+  if (await loadCreditCardDashboard(page, debugLog)) {
+    const driven = await driveCardsAndCollect(page, ccRaw, debugLog);
+    creditCards = driven.cards;
+    cuentaToCard = driven.cuentaToCard;
+    await delay(2000); // let the last query land
+    const unbilled = ccMovementsFrom(
+      ccRaw,
+      "unbilled",
+      cuentaToCard,
+      normalizeSantanderUnbilledApiMovements,
+    );
+    movements.push(...unbilled);
+    debugLog.push(`  CC (no facturados): ${unbilled.length} movement(s)`);
   }
+
+  const tcReady = await navigateToCreditCardSection(page, debugLog);
+  if (tcReady && (await clickTcTab(page, "movimientos facturados"))) {
+    const before = ccRaw.filter((r) => r.endpoint === "billed").length;
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline && ccRaw.filter((r) => r.endpoint === "billed").length === before) {
+      await delay(300);
+    }
+    const billed = ccMovementsFrom(
+      ccRaw,
+      "billed",
+      cuentaToCard,
+      normalizeSantanderBilledApiMovements,
+      "CLP", // estadoCuentaNacional has no Moneda in the request; it is the CLP statement
+    );
+    movements.push(...billed);
+    debugLog.push(`  CC (facturados): ${billed.length} movement(s)`);
+  }
+
   movements = deduplicateMovements(movements);
+
+  // Attach movement counts to each card for convenience.
+  for (const card of creditCards) {
+    const mask = card.label.match(/\*{2,}\d{4}/)?.[0];
+    if (mask) card.movements = movements.filter((m) => m.card === mask);
+  }
 
   // 8. Balance
   let balance: number | undefined;
@@ -516,10 +872,23 @@ async function scrapeSantander(
   progress(`Listo — ${movements.length} movimientos totales`);
   debugLog.push(balance !== undefined ? `9. Balance: $${balance.toLocaleString("es-CL")}` : "9. Balance not found");
 
+  // Enrich each card with used/total credit (Utilizado/Autorizado) scraped from
+  // the card detail page, matched to the right card by its Disponible amount.
+  if (creditCards.length > 0) {
+    await enrichCardCupos(page, creditCards, debugLog);
+  }
+
   await doSave(page, "05-final");
   const ss = doScreenshots ? ((await page.screenshot({ encoding: "base64", fullPage: true })) as string) : undefined;
 
-  return { success: true, bank, accounts: [{ balance, movements }], screenshot: ss, debug: debugLog.join("\n") };
+  return {
+    success: true,
+    bank,
+    accounts: [{ balance, movements }],
+    ...(creditCards.length > 0 ? { creditCards } : {}),
+    screenshot: ss,
+    debug: debugLog.join("\n"),
+  };
 }
 
 // ─── Export ──────────────────────────────────────────────────────────

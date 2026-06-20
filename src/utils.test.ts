@@ -1,7 +1,29 @@
 import { describe, it, expect, vi } from "vitest";
-import { DebugLog, deduplicateMovements } from "./utils.js";
+import { DebugLog, deduplicateMovements, parseChileanAmount } from "./utils.js";
 import { MOVEMENT_SOURCE } from "./types.js";
 import type { BankMovement } from "./types.js";
+
+// ─── parseChileanAmount ──────────────────────────────────────────
+
+describe("parseChileanAmount", () => {
+  it("parses CLP amounts (dots = thousands) as integers", () => {
+    expect(parseChileanAmount("$1.234.567")).toBe(1234567);
+    expect(parseChileanAmount("-$50.000")).toBe(-50000);
+    expect(parseChileanAmount("15.990")).toBe(15990);
+  });
+
+  it("keeps decimal cents (comma = decimal), e.g. USD amounts", () => {
+    expect(parseChileanAmount("13,99")).toBe(13.99);
+    expect(parseChileanAmount("USD 14,82")).toBe(14.82);
+    expect(parseChileanAmount("-$1.234,56")).toBe(-1234.56);
+  });
+
+  it("handles negatives and empty/garbage input", () => {
+    expect(parseChileanAmount("-14,82")).toBe(-14.82);
+    expect(parseChileanAmount("")).toBe(0);
+    expect(parseChileanAmount("abc")).toBe(0);
+  });
+});
 
 // ─── DebugLog ────────────────────────────────────────────────────
 
