@@ -31,6 +31,8 @@ export interface BankMovement {
   owner?: CardOwner;
   /** Identificador de la tarjeta (ej: "****8335") — útil cuando hay múltiples tarjetas */
   card?: string;
+  /** Máscara de la cuenta de origen (ej: "****8717") — útil cuando hay múltiples cuentas */
+  account?: string;
   /** Cuotas (ej: "01/01", "02/06") */
   installments?: string;
   /** Monto total de la compra (distinto de amount cuando es en cuotas) */

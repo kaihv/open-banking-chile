@@ -205,8 +205,8 @@ async function bchileLogin(
 
 // ─── Data extraction ─────────────────────────────────────────────
 
-function cartolaMovToMovement(mov: ApiCartolaMov): BankMovement {
-  return { date: normalizeDate(mov.fechaContable), description: mov.descripcion.trim(), amount: mov.tipo === "cargo" ? -Math.abs(mov.monto) : Math.abs(mov.monto), balance: mov.saldo, source: MOVEMENT_SOURCE.account };
+function cartolaMovToMovement(mov: ApiCartolaMov, account?: string): BankMovement {
+  return { date: normalizeDate(mov.fechaContable), description: mov.descripcion.trim(), amount: mov.tipo === "cargo" ? -Math.abs(mov.monto) : Math.abs(mov.monto), balance: mov.saldo, source: MOVEMENT_SOURCE.account, ...(account ? { account } : {}) };
 }
 
 function facturadoToMovement(tx: ApiTransaccionFacturada, source: MovementSource, cardMask?: string): BankMovement {
@@ -235,7 +235,7 @@ async function fetchAccountMovements(page: Page, products: ApiProduct[], fullNam
       const cartola = await apiPost<ApiCartolaResponse>(page, "bff-pper-prd-cta-movimientos/movimientos/getCartola", { cuentaSeleccionada, cabecera: { statusGenerico: true, paginacionDesde: 1 } });
 
       if (cartola.movimientos) {
-        for (const mov of cartola.movimientos) movements.push(cartolaMovToMovement(mov));
+        for (const mov of cartola.movimientos) movements.push(cartolaMovToMovement(mov, acct.mascara));
         if (balance === undefined && acct.codigoMoneda === "CLP" && cartola.movimientos.length > 0) balance = cartola.movimientos[0].saldo;
 
         let hasMore = cartola.movimientos.length > 0 && (cartola.pagina?.[0]?.masPaginas ?? false);
@@ -244,7 +244,7 @@ async function fetchAccountMovements(page: Page, products: ApiProduct[], fullNam
           try {
             const next = await apiPost<ApiCartolaResponse>(page, "bff-pper-prd-cta-movimientos/movimientos/getCartola", { cuentaSeleccionada, cabecera: { statusGenerico: true, paginacionDesde: offset } });
             if (!next.movimientos?.length) break;
-            for (const mov of next.movimientos) movements.push(cartolaMovToMovement(mov));
+            for (const mov of next.movimientos) movements.push(cartolaMovToMovement(mov, acct.mascara));
             offset += next.movimientos.length;
             hasMore = next.pagina?.[0]?.masPaginas ?? false;
           } catch { hasMore = false; }
