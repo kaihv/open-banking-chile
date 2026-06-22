@@ -1,10 +1,13 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { MOVEMENT_SOURCE } from "../types.js";
 import {
   isSaldoInicial,
   normalizeSantanderCheckingApiMovements,
   normalizeSantanderUnbilledApiMovements,
   normalizeSantanderBilledApiMovements,
+  parseUsdAmount,
+  creditCardDedupKey,
+  buildCreditCardFromRaw,
 } from "./santander.js";
 
 // ─── isSaldoInicial ──────────────────────────────────────────────
@@ -339,5 +342,90 @@ describe("normalizeSantanderBilledApiMovements", () => {
   it("skips captures with missing nested path", () => {
     expect(normalizeSantanderBilledApiMovements([{}])).toEqual([]);
     expect(normalizeSantanderBilledApiMovements([{ DATA: {} }])).toEqual([]);
+  });
+});
+
+// ─── parseUsdAmount ──────────────────────────────────────────────
+
+describe("parseUsdAmount", () => {
+  it("parses Chilean-formatted USD amounts (. thousands, , decimals)", () => {
+    expect(parseUsdAmount("USD 1.234,56")).toBeCloseTo(1234.56);
+    expect(parseUsdAmount("$ 2.000,00")).toBe(2000);
+    expect(parseUsdAmount("500,50")).toBeCloseTo(500.5);
+  });
+
+  it("returns 0 for empty/null without warning (no USD section is normal)", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(parseUsdAmount(null)).toBe(0);
+    expect(parseUsdAmount(undefined)).toBe(0);
+    expect(parseUsdAmount("")).toBe(0);
+    expect(parseUsdAmount("   ")).toBe(0);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("warns and returns 0 when a non-empty value cannot be parsed (format change)", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(parseUsdAmount("N/A")).toBe(0);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain("formato inesperado");
+    warn.mockRestore();
+  });
+});
+
+// ─── creditCardDedupKey ──────────────────────────────────────────
+
+describe("creditCardDedupKey", () => {
+  it("keeps twin cards (same product/balance, different last4) apart", () => {
+    const a = { label: "Mastercard Black ****1234", national: { used: 0, available: 0, total: 1_000_000 } };
+    const b = { label: "Mastercard Black ****5678", national: { used: 0, available: 0, total: 1_000_000 } };
+    expect(creditCardDedupKey(a)).not.toBe(creditCardDedupKey(b));
+  });
+
+  it("collapses swiper clones (identical last4)", () => {
+    const a = { label: "Visa Gold ****4321", national: { used: 0, available: 0, total: 500_000 } };
+    const clone = { label: "Visa Gold ****4321", national: { used: 1, available: 2, total: 500_000 } };
+    expect(creditCardDedupKey(a)).toBe(creditCardDedupKey(clone));
+  });
+
+  it("falls back to label+totals when no last4 is present", () => {
+    const a = { label: "Tarjeta Santander", national: { used: 0, available: 0, total: 100 } };
+    const b = { label: "Tarjeta Santander", national: { used: 0, available: 0, total: 200 } };
+    expect(creditCardDedupKey(a)).not.toBe(creditCardDedupKey(b));
+    expect(creditCardDedupKey(a)).toBe(creditCardDedupKey({ ...a }));
+  });
+});
+
+// ─── buildCreditCardFromRaw (selector parsing smoke test) ────────
+
+describe("buildCreditCardFromRaw", () => {
+  it("parses at least one card with national + international cupo", () => {
+    const card = buildCreditCardFromRaw({
+      cardName: "Mastercard Black",
+      last4: "5824",
+      sections: [
+        { header: "Cupo Nacional", available: "700.000", used: "300.000", total: "1.000.000", currency: "CLP" },
+        { header: "Cupo en Dólares", available: "1.500,00", used: "500,00", total: "2.000,00", currency: "USD" },
+      ],
+      billingPeriod: "Febrero 2026",
+      nextBillingDate: "05-03-2026",
+    });
+    expect(card).not.toBeNull();
+    expect(card!.label).toBe("Mastercard Black ****5824");
+    expect(card!.national).toEqual({ used: 300_000, available: 700_000, total: 1_000_000 });
+    expect(card!.international).toEqual({ used: 500, available: 1500, total: 2000, currency: "USD" });
+    expect(card!.billingPeriod).toBe("Febrero 2026");
+    expect(card!.nextBillingDate).toBe("05-03-2026");
+  });
+
+  it("returns null when no cupo section yields data (selectors broke)", () => {
+    const card = buildCreditCardFromRaw({
+      cardName: "Visa",
+      last4: "0000",
+      sections: [{ header: "", available: null, used: null, total: null, currency: "CLP" }],
+      billingPeriod: null,
+      nextBillingDate: null,
+    });
+    expect(card).toBeNull();
   });
 });
