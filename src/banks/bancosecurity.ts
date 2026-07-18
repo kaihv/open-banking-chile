@@ -1,5 +1,12 @@
 import type { Page } from "puppeteer-core";
-import type { BankMovement, BankScraper, ScrapeResult, ScraperOptions } from "../types.js";
+import type {
+  AccountBalance,
+  BankMovement,
+  BankScraper,
+  CreditCardBalance,
+  ScrapeResult,
+  ScraperOptions,
+} from "../types.js";
 import { MOVEMENT_SOURCE } from "../types.js";
 import { closePopups, delay, parseChileanAmount, normalizeDate, deduplicateMovements } from "../utils.js";
 import { runScraper } from "../infrastructure/scraper-runner.js";
@@ -19,6 +26,9 @@ const LOGIN_SELECTORS = {
   rutFormat: "formatted" as const,
 };
 
+const NAV_TIMEOUT_MS = 15000;
+const NAV_FALLBACK_MS = 20000;
+
 // ─── Helpers ─────────────────────────────────────────────────────
 
 async function waitForDashboard(page: Page): Promise<void> {
@@ -31,6 +41,22 @@ async function waitForDashboard(page: Page): Promise<void> {
     }, keywords);
     if (found) break;
     await delay(1500);
+  }
+}
+
+/**
+ * Wraps `page.goto` / form-submit to wait for the resulting page navigation
+ * to settle, with a fallback timeout. Prevents "Execution context destroyed"
+ * errors that occur when the next evaluate() runs before the new page loads.
+ */
+async function waitForNavigationSafe(page: Page, debugLog: string[]): Promise<void> {
+  try {
+    await Promise.race([
+      page.waitForNavigation({ waitUntil: "networkidle2", timeout: NAV_TIMEOUT_MS }),
+      delay(NAV_FALLBACK_MS),
+    ]);
+  } catch (err) {
+    debugLog.push(`  Navigation warning: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -192,6 +218,340 @@ async function paginate(page: Page, debugLog: string[]): Promise<BankMovement[]>
     debugLog.push(`  Pagination: page ${i + 2}`);
   }
   return deduplicateMovements(all);
+}
+
+// ─── Credit-card extraction ──────────────────────────────────────
+
+/**
+ * Build a default card label from a card number / mask. Returns the last 4 digits
+ * prefixed by `****`, or a placeholder if nothing usable is found.
+ */
+function defaultCardLabel(last4: string | null): string {
+  return last4 ? `Tarjeta ****${last4}` : "Tarjeta Banco Security";
+}
+
+/**
+ * Open "Productos" → "Tarjetas de Crédito" from the dashboard. Returns true if
+ * the click was successful and we appear to be on the TC section.
+ */
+async function navigateToCreditCards(page: Page, debugLog: string[]): Promise<boolean> {
+  await waitForDashboard(page);
+
+  const clickedProductos = await nativeClick(page, ["productos"]);
+  if (clickedProductos) {
+    debugLog.push(`  TC nav: clicked ${clickedProductos}`);
+    await delay(1500);
+  }
+
+  const targets = [
+    "tarjetas de crédito",
+    "tarjetas de credito",
+    "mis tarjetas",
+    "tarjetas",
+  ];
+  for (const target of targets) {
+    const clicked = await nativeClick(page, [target]);
+    if (clicked) {
+      debugLog.push(`  TC nav: clicked ${clicked}`);
+      await delay(4000);
+      return true;
+    }
+  }
+  debugLog.push("  TC nav: no link found");
+  return false;
+}
+
+/**
+ * Parse the "label" + last-4 digits of a credit card from the surrounding text.
+ * Examples we try to match:
+ *   "Mastercard Black ****5824"
+ *   "Visa Platinum 1234"
+ */
+function extractCreditCardLabel(text: string): { label: string; last4: string | null } {
+  const clean = text.replace(/\s+/g, " ").trim();
+  // Match "****NNNN" (preferred) or "NNNN" at end of a 12-19 digit number
+  const masked = clean.match(/\*{2,4}\s*(\d{4})/);
+  if (masked) {
+    return { label: clean.slice(0, masked.index! + masked[0].length).trim() || defaultCardLabel(masked[1]), last4: masked[1] };
+  }
+  const long = clean.match(/\b(\d{4})\s*$/);
+  if (long) {
+    return { label: clean, last4: long[1] };
+  }
+  return { label: clean, last4: null };
+}
+
+/**
+ * Extract credit-card movements from the current page (main frame + iframes).
+ * Detects tabs/sections like "No facturados" vs "Facturados" by looking at
+ * visible headers; falls back to one combined list.
+ */
+async function extractCreditCardMovements(
+  page: Page,
+  source: "credit_card_unbilled" | "credit_card_billed",
+  debugLog: string[],
+): Promise<BankMovement[]> {
+  const raw = await page.evaluate((srcKind: string) => {
+    const isUnbilled = srcKind === "credit_card_unbilled";
+    const tableHeaderHints = isUnbilled
+      ? ["no facturad", "consumos", "saldo actual", "movimientos"]
+      : ["facturad", "estado de cuenta", "periodo", "movimientos"];
+
+    const tables = Array.from(document.querySelectorAll("table"));
+    const results: Array<{ date: string; description: string; amount: string; cuota: string; total: string }> = [];
+
+    for (const table of tables) {
+      const headerCells = Array.from(table.querySelectorAll("th, td"))
+        .slice(0, 8)
+        .map((c) => (c as HTMLElement).innerText?.trim().toLowerCase() || "");
+      const headerJoined = headerCells.join("|");
+      if (!tableHeaderHints.some((h) => headerJoined.includes(h))) continue;
+      if (!(headerJoined.includes("fecha") || headerJoined.includes("movimiento"))) continue;
+
+      const dateIdx = headerCells.findIndex((h) => h.includes("fecha"));
+      const descIdx = headerCells.findIndex(
+        (h) => h.includes("descrip") || h.includes("detalle") || h.includes("glosa") || h.includes("comercio"),
+      );
+      const amountIdx = headerCells.findIndex(
+        (h) => h === "monto" || h.includes("importe") || h.includes("monto $") || h.includes("cargo") || h.includes("abono"),
+      );
+      const cuotaIdx = headerCells.findIndex(
+        (h) => h.includes("cuota") || h.includes("cuotas") || h === "n/n" || h === "n°/n°",
+      );
+      const totalIdx = headerCells.findIndex(
+        (h) => h.includes("total") && !h.includes("cupo"),
+      );
+
+      const rows = Array.from(table.querySelectorAll("tbody tr, tr")).filter(
+        (r) => r.querySelectorAll("td").length >= 3,
+      );
+      for (const row of rows) {
+        const cells = Array.from(row.querySelectorAll("td")).map(
+          (c) => (c as HTMLElement).innerText?.trim() || "",
+        );
+        if (cells.length < 2) continue;
+        const date = dateIdx >= 0 ? (cells[dateIdx] || "") : "";
+        if (!/\d{1,2}[\/.\-]\d{1,2}/.test(date)) continue;
+        const description = descIdx >= 0 ? (cells[descIdx] || "") : "";
+        const amount = amountIdx >= 0 ? (cells[amountIdx] || "") : "";
+        if (!description || !amount) continue;
+        const cuota = cuotaIdx >= 0 ? (cells[cuotaIdx] || "") : "";
+        const total = totalIdx >= 0 ? (cells[totalIdx] || "") : "";
+        results.push({ date, description, amount, cuota, total });
+      }
+    }
+    return results;
+  }, source);
+
+  const movements = raw
+    .map((row) => {
+      const amt = parseChileanAmount(row.amount);
+      if (amt === 0) return null;
+      const isNegative = /-\s*\d/.test(row.amount) || /cargo|débito|debito/i.test(row.description);
+
+      // Installments: prefer a dedicated "cuota" column ("02/06"), fall back
+      // to a "NN/NN" pattern embedded in the description.
+      let installments: string | undefined;
+      const cuotaMatch = (row.cuota || "").match(/(\d{1,2}\s*\/\s*\d{1,2})/);
+      if (cuotaMatch) {
+        installments = cuotaMatch[1].replace(/\s+/g, "");
+      } else {
+        const descMatch = row.description.match(/(\d{1,2}\s*\/\s*\d{1,2})/);
+        if (descMatch) installments = descMatch[1].replace(/\s+/g, "");
+      }
+
+      // totalAmount: explicit column wins; otherwise if installments look like
+      // "02/06" we can compute it as amount * 6.
+      let totalAmount: number | undefined;
+      if (row.total) totalAmount = parseChileanAmount(row.total) || undefined;
+      if (totalAmount === undefined && installments) {
+        const m = installments.match(/(\d{1,2})\s*\/\s*(\d{1,2})/);
+        if (m) {
+          const total = parseInt(m[2], 10);
+          if (total > 0) totalAmount = Math.abs(amt) * total;
+        }
+      }
+
+      return {
+        date: normalizeDate(row.date),
+        description: row.description.trim(),
+        amount: isNegative ? -Math.abs(amt) : Math.abs(amt),
+        balance: 0,
+        source,
+        ...(installments ? { installments } : {}),
+        ...(totalAmount !== undefined ? { totalAmount } : {}),
+      } as BankMovement;
+    })
+    .filter((m): m is BankMovement => m !== null);
+
+  debugLog.push(`  TC ${source}: ${movements.length} raw`);
+  return deduplicateMovements(movements);
+}
+
+/**
+ * Try to parse cupo (national / international) + billing dates from visible
+ * page text. Returns the values that could be extracted; missing values stay
+ * `undefined` so the caller can decide what to do.
+ */
+async function extractCardBalance(
+  page: Page,
+  debugLog: string[],
+): Promise<{
+  national?: { used: number; available: number; total: number };
+  international?: { used: number; available: number; total: number; currency: string };
+  nextBillingDate?: string;
+  nextDueDate?: string;
+  periodExpenses?: number;
+}> {
+  const text = (await page.evaluate(() => document.body?.innerText || "")).toLowerCase();
+
+  function matchAmount(re: RegExp): number {
+    const m = text.match(re);
+    if (!m) return 0;
+    return parseChileanAmount(m[1]);
+  }
+
+  // Nacional: "cupo nacional", or generic "cupo utilizado / disponible / total"
+  const natUsed = matchAmount(/utilizado[^0-9$]*\$?\s*([\d.]+(?:[.,]\d+)?)/i);
+  const natAvail = matchAmount(/disponible[^0-9$]*\$?\s*([\d.]+(?:[.,]\d+)?)/i);
+  const natTotal = matchAmount(/cupo total[^0-9$]*\$?\s*([\d.]+(?:[.,]\d+)?)/i)
+    || matchAmount(/total[^0-9$]*\$?\s*([\d.]+(?:[.,]\d+)?)/i);
+
+  const nat: { used: number; available: number; total: number } | undefined =
+    natUsed > 0 || natAvail > 0 || natTotal > 0
+      ? { used: natUsed, available: natAvail, total: natTotal }
+      : undefined;
+  if (nat) debugLog.push(`  Cupo nacional: usado=${nat.used} disp=${nat.available} total=${nat.total}`);
+
+  // Internacional: look for USD/UF/US$ prefix
+  const intlUsed = matchAmount(/utilizado[^0-9$]*(?:usd|us\$|uf)\s*\$?\s*([\d.,]+)/i);
+  const intlAvail = matchAmount(/disponible[^0-9$]*(?:usd|us\$|uf)\s*\$?\s*([\d.,]+)/i);
+  const intlTotal = matchAmount(/cupo total[^0-9$]*(?:usd|us\$|uf)\s*\$?\s*([\d.,]+)/i);
+
+  const intl = intlUsed > 0 || intlAvail > 0 || intlTotal > 0
+    ? { used: intlUsed, available: intlAvail, total: intlTotal, currency: "USD" }
+    : undefined;
+  if (intl) debugLog.push(`  Cupo internacional: usado=${intl.used} disp=${intl.available} total=${intl.total} ${intl.currency}`);
+
+  // Billing dates
+  const nextBillingMatch = text.match(/pr[oó]xima\s+facturaci[oó]n[\s\S]{0,40}?(\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4})/i);
+  const nextDueMatch = text.match(/pr[oó]ximo\s+vencimiento[\s\S]{0,40}?(\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4})/i);
+
+  const nextBillingDate = nextBillingMatch ? normalizeDate(nextBillingMatch[1]) : undefined;
+  const nextDueDate = nextDueMatch ? normalizeDate(nextDueMatch[1]) : undefined;
+  if (nextBillingDate) debugLog.push(`  Next billing: ${nextBillingDate}`);
+  if (nextDueDate) debugLog.push(`  Next due: ${nextDueDate}`);
+
+  // Period expenses: "gastos del período" or "total consumos" or "saldo actual"
+  const periodExpensesMatch = text.match(/(?:gastos\s+del\s+per[ií]odo|total\s+consumos|saldo\s+actual)[^0-9$]*\$?\s*([\d.]+(?:[.,]\d+)?)/i);
+  const periodExpenses = periodExpensesMatch ? parseChileanAmount(periodExpensesMatch[1]) : undefined;
+  if (periodExpenses !== undefined) debugLog.push(`  Period expenses: ${periodExpenses}`);
+
+  return {
+    national: nat,
+    international: intl,
+    nextBillingDate,
+    nextDueDate,
+    periodExpenses,
+  };
+}
+
+/**
+ * Owner extraction — Banco Security typically labels "Titular" vs "Adicional"
+ * in the card detail section. Returns "titular" | "adicional" | undefined.
+ */
+async function extractOwner(page: Page): Promise<BankMovement["owner"] | undefined> {
+  const text = (await page.evaluate(() => document.body?.innerText || "")).toLowerCase();
+  if (/\badicional\b/.test(text)) return "adicional";
+  if (/\btitular\b/.test(text)) return "titular";
+  return undefined;
+}
+
+/**
+ * Whole TC pipeline: navigate to credit card section, extract all visible
+ * cards (movements + balance + dates). Returns an empty array if the user
+ * has no cards or the navigation failed.
+ */
+async function fetchCreditCardData(page: Page, debugLog: string[]): Promise<CreditCardBalance[]> {
+  const cards: CreditCardBalance[] = [];
+
+  const navigated = await navigateToCreditCards(page, debugLog);
+  if (!navigated) {
+    debugLog.push("  TC: could not navigate to credit card section");
+    return cards;
+  }
+
+  // Look for a card-selector (multi-card case)
+  const cardOptions: Array<{ label: string; last4: string | null }> = await page
+    .evaluate(() => {
+      const selects = Array.from(document.querySelectorAll("select"));
+      for (const sel of selects) {
+        const options = Array.from(sel.options || []);
+        const matches = options.filter((o) => /\*{2,4}\d{2,4}|\b\d{4}\b/.test(o.text || ""));
+        if (matches.length >= 1) {
+          return matches.map((o) => ({ label: o.text?.trim() || "", value: o.value }));
+        }
+      }
+      return [];
+    })
+    .catch(() => [] as Array<{ label: string; value: string }>)
+    .then((opts) => opts.map((o) => extractCreditCardLabel(o.label)));
+
+  // If we didn't find a selector, treat the visible card as the only one
+  const cardList: Array<{ label: string; last4: string | null }> =
+    cardOptions.length > 0
+      ? cardOptions
+      : [extractCreditCardLabel("Tarjeta Banco Security")];
+
+  for (const cardMeta of cardList) {
+    debugLog.push(`  TC card: ${cardMeta.label}`);
+
+    if (cardOptions.length > 0) {
+      // Re-select the option in the dropdown to switch card
+      const switched = await page
+        .evaluate((lbl: string) => {
+          const selects = Array.from(document.querySelectorAll("select"));
+          for (const sel of selects) {
+            const opts = Array.from(sel.options || []);
+            const match = opts.find((o) => (o.text || "").trim() === lbl);
+            if (match) {
+              (sel as HTMLSelectElement).value = match.value;
+              sel.dispatchEvent(new Event("change", { bubbles: true }));
+              return true;
+            }
+          }
+          return false;
+        }, cardMeta.label)
+        .catch(() => false);
+      if (switched) await delay(2500);
+    }
+
+    const [unbilled, billed, balance, owner] = await Promise.all([
+      extractCreditCardMovements(page, MOVEMENT_SOURCE.credit_card_unbilled, debugLog),
+      extractCreditCardMovements(page, MOVEMENT_SOURCE.credit_card_billed, debugLog),
+      extractCardBalance(page, debugLog),
+      extractOwner(page),
+    ]);
+
+    const movements = deduplicateMovements([...unbilled, ...billed]).map((m) => ({
+      ...m,
+      card: cardMeta.last4 ? `****${cardMeta.last4}` : cardMeta.label,
+      ...(owner ? { owner } : {}),
+    }));
+
+    const card: CreditCardBalance = {
+      label: cardMeta.label,
+      ...(balance.national ? { national: balance.national } : {}),
+      ...(balance.international ? { international: balance.international } : {}),
+      ...(balance.nextBillingDate ? { nextBillingDate: balance.nextBillingDate } : {}),
+      ...(balance.nextDueDate ? { nextDueDate: balance.nextDueDate } : {}),
+      ...(balance.periodExpenses !== undefined ? { periodExpenses: balance.periodExpenses } : {}),
+      movements,
+    };
+    cards.push(card);
+  }
+
+  return cards;
 }
 
 // ─── Historical months (Cartola histórica via TXT) ───────────────
@@ -376,7 +736,7 @@ async function scrapeBancoSecurity(session: BrowserSession, options: ScraperOpti
   progress("Ingresando RUT...");
   if (!(await fillRut(page, rut, LOGIN_SELECTORS))) {
     const ss = await page.screenshot({ encoding: "base64" });
-    return { success: false, bank, movements: [], error: "No se encontró campo de RUT", screenshot: ss as string, debug: debugLog.join("\n") };
+    return { success: false, bank, accounts: [], error: "No se encontró campo de RUT", screenshot: ss as string, debug: debugLog.join("\n") };
   }
   await delay(800);
 
@@ -384,11 +744,13 @@ async function scrapeBancoSecurity(session: BrowserSession, options: ScraperOpti
   debugLog.push("4. Filling password...");
   if (!(await fillPassword(page, password, LOGIN_SELECTORS))) {
     const ss = await page.screenshot({ encoding: "base64" });
-    return { success: false, bank, movements: [], error: "No se encontró campo de clave", screenshot: ss as string, debug: debugLog.join("\n") };
+    return { success: false, bank, accounts: [], error: "No se encontró campo de clave", screenshot: ss as string, debug: debugLog.join("\n") };
   }
   await delay(800);
 
-  // 5. Submit
+  // 5. Submit — then wait for the post-submit navigation to settle
+  //    (this is the fix for the "Execution context destroyed" bug: the form
+  //    submit triggers a navigation; the next evaluate() ran on the old page)
   debugLog.push("5. Submitting login...");
   progress("Iniciando sesión...");
   const submitted = await page.evaluate(() => {
@@ -397,6 +759,19 @@ async function scrapeBancoSecurity(session: BrowserSession, options: ScraperOpti
     return false;
   });
   if (!submitted) await page.keyboard.press("Enter");
+
+  // Critical: wait for the navigation triggered by submit to settle before
+  // calling waitForDashboard(). Race against a long timeout fallback so that
+  // networks where the page is already loaded don't deadlock.
+  try {
+    await Promise.race([
+      page.waitForNavigation({ waitUntil: "networkidle2", timeout: NAV_TIMEOUT_MS }),
+      delay(NAV_FALLBACK_MS),
+    ]);
+  } catch (err) {
+    debugLog.push(`  Navigation warning: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   await waitForDashboard(page);
   await doSave(page, "03-after-login");
 
@@ -404,7 +779,7 @@ async function scrapeBancoSecurity(session: BrowserSession, options: ScraperOpti
   const loginError = await detectLoginError(page);
   if (loginError) {
     const ss = await page.screenshot({ encoding: "base64" });
-    return { success: false, bank, movements: [], error: `Error del banco: ${loginError}`, screenshot: ss as string, debug: debugLog.join("\n") };
+    return { success: false, bank, accounts: [], error: `Error del banco: ${loginError}`, screenshot: ss as string, debug: debugLog.join("\n") };
   }
 
   // Check if we're still on the login page (login failed) vs on the dashboard (login OK)
@@ -420,7 +795,7 @@ async function scrapeBancoSecurity(session: BrowserSession, options: ScraperOpti
       visibleText.includes("clave dinámica");
     if (is2FA) {
       const ss = await page.screenshot({ encoding: "base64" });
-      return { success: false, bank, movements: [], error: "El banco pide 2FA. No automatizable.", screenshot: ss as string, debug: debugLog.join("\n") };
+      return { success: false, bank, accounts: [], error: "El banco pide 2FA. No automatizable.", screenshot: ss as string, debug: debugLog.join("\n") };
     }
   }
 
@@ -450,18 +825,43 @@ async function scrapeBancoSecurity(session: BrowserSession, options: ScraperOpti
     debugLog.push(`10. Total after merging historical: ${allMovements.length} movements`);
   }
 
-  const movements = allMovements;
-  progress(`Listo — ${movements.length} movimientos`);
+  // 11. Credit card extraction
+  debugLog.push("11. Extracting credit cards...");
+  progress("Extrayendo tarjetas de crédito...");
+  const creditCards = await fetchCreditCardData(page, debugLog);
+  // Tag credit card movements back into `allMovements` (deduped)
+  for (const card of creditCards) {
+    if (card.movements && card.movements.length > 0) {
+      allMovements = deduplicateMovements([...allMovements, ...card.movements]);
+    }
+  }
+  const accountMovements = deduplicateMovements(
+    allMovements.filter((m) => m.source === MOVEMENT_SOURCE.account),
+  );
+
+  progress(`Listo — ${accountMovements.length} movimientos de cuenta, ${creditCards.length} tarjeta(s)`);
   await doSave(page, "05-final");
 
+  // Pick the balance from the first movement that has one (typically the
+  // most recent). If none do, leave the field undefined.
   let balance: number | undefined;
-  if (movements.length > 0 && movements[0].balance > 0) balance = movements[0].balance;
+  for (const m of accountMovements) {
+    if (m.balance > 0) { balance = m.balance; break; }
+  }
+
+  const accounts: AccountBalance[] = [
+    {
+      label: "Cuenta Corriente",
+      balance,
+      movements: accountMovements,
+    },
+  ];
 
   return {
     success: true,
     bank,
-    movements,
-    balance,
+    accounts,
+    creditCards: creditCards.length > 0 ? creditCards : undefined,
     debug: debugLog.join("\n"),
   };
 }

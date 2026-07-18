@@ -146,7 +146,6 @@ En `src/utils.ts` hay funciones compartidas que puedes usar:
 - Banco Itaú
 - Banco Scotiabank
 - Banco BICE
-- Banco Security
 - Banco Ripley
 - Banco Consorcio
 - Coopeuch
@@ -228,3 +227,53 @@ Revisaremos que:
 - El scraper siga la interfaz `BankScraper`
 - Los errores se manejen correctamente (especialmente 2FA)
 - El código sea razonablemente limpio y documentado
+
+## Template de PR
+
+Cuando abras un PR, usa este template en la descripción:
+
+```markdown
+## Banco agregado
+
+- **Banco**: [Nombre del banco]
+- **ID**: `[id-del-banco]`
+- **URL**: [URL del portal]
+
+## Qué incluye
+
+- [ ] Login (RUT + clave)
+- [ ] Extracción de movimientos de cuenta corriente
+- [ ] Extracción de tarjetas de crédito (si aplica)
+- [ ] Saldos y cupos
+- [ ] Soporte histórico (si aplica)
+- [ ] Tests unitarios
+
+## Características especiales
+
+- [Describe cualquier comportamiento especial: headful, 2FA, multi-cuenta, etc.]
+
+## Verificación de seguridad
+
+- [ ] No hay credenciales hardcodeadas
+- [ ] No hay datos personales en logs o screenshots
+- [ ] Todos los selectores tienen fallbacks
+- [ ] `npm run build` pasa sin errores
+- [ ] Tests pasan: `npm test`
+
+## Notas para testing
+
+```bash
+# Configurar .env
+BANCOSECURITY_RUT=tu-rut
+BANCOSECURITY_PASS=tu-clave
+
+# Construir
+npm run build
+
+# Prueba rápida
+node dist/cli.js --bank bancosecurity --pretty
+
+# Con screenshots para debugging
+node dist/cli.js --bank bancosecurity --pretty --screenshots
+```
+```
