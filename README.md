@@ -56,6 +56,7 @@ También en esta versión: utilidades compartidas (`parseChileanAmount`, `normal
 | Itaú                              | `itau`       | ✅ Funcional |
 | Banco Estado (CuentaRUT)          | `bestado`    | ✅ Funcional |
 | Tarjeta Cencosud                  | `cencosud`   | ✅ Funcional |
+| Banco Security                    | `bancosecurity` | ✅ Funcional |
 
 **¿Tu banco no está?** → [Contribuir](#contribuir)
 
