@@ -78,12 +78,37 @@ async function login(page: Page, rut: string, password: string, debugLog: string
   } catch { /* no banner */ }
   await screenshotIfEnabled(page, "01-homepage", doScreenshots, debugLog);
 
-  // Click "Mi cuenta" (triggers navigation)
+  // Click "Mi cuenta" (opens login form).
+  // The header button uses aria-label="Button", so getByRole(name="Mi cuenta")
+  // fails. Prefer #btn-auth-normal, then visible text matches (skip hidden twins).
   debugLog.push("2. Clicking 'Mi cuenta'...");
   progress("Ingresando a Mi cuenta...");
-  try {
-    await page.locator('a, button').filter({ hasText: "Mi cuenta" }).first().click({ timeout: 5000 });
-  } catch { /* may cause navigation context change */ }
+  await page.waitForSelector("#main-header__sub-content, #btn-auth-normal", { timeout: 20000 }).catch(() => {});
+  const miCuentaSelectors = [
+    "#btn-auth-normal",
+    '#main-header__sub-content button:has-text("Mi cuenta")',
+    'button:has-text("Mi cuenta")',
+  ];
+  let miCuentaClicked = false;
+  for (const selector of miCuentaSelectors) {
+    const loc = page.locator(selector);
+    const count = await loc.count();
+    for (let i = 0; i < count; i++) {
+      const candidate = loc.nth(i);
+      if (!(await candidate.isVisible({ timeout: 1500 }).catch(() => false))) continue;
+      try {
+        await candidate.click({ timeout: 5000, force: true });
+        debugLog.push(`  Clicked 'Mi cuenta' via ${selector}[${i}]`);
+        miCuentaClicked = true;
+        break;
+      } catch { /* try next */ }
+    }
+    if (miCuentaClicked) break;
+  }
+  if (!miCuentaClicked) {
+    const ss = (await page.screenshot()).toString("base64");
+    return { success: false, error: "No se encontró el botón 'Mi cuenta'", screenshot: ss };
+  }
   await page.waitForLoadState("networkidle").catch(() => {});
   await delay(3000);
   await screenshotIfEnabled(page, "02-login-form", doScreenshots, debugLog);
