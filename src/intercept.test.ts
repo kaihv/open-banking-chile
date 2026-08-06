@@ -100,6 +100,47 @@ describe("createInterceptor", () => {
     expect(result).toEqual([]);
   });
 
+  it("clear discards previously captured data for the given endpoint id", async () => {
+    const { page, simulateCapture } = mockPage();
+    const interceptor = await createInterceptor(page, [{ id: "acct", urlPrefix: "https://bank.cl/api" }]);
+
+    simulateCapture("acct", { page: 1 });
+    expect(interceptor.getAll("acct")).toHaveLength(1);
+
+    interceptor.clear("acct");
+    expect(interceptor.getAll("acct")).toEqual([]);
+  });
+
+  it("clear only affects the given endpoint id", async () => {
+    const { page, simulateCapture } = mockPage();
+    const interceptor = await createInterceptor(page, [
+      { id: "checking", urlPrefix: "https://bank.cl/checking" },
+      { id: "cc", urlPrefix: "https://bank.cl/cards" },
+    ]);
+
+    simulateCapture("checking", { movements: [] });
+    simulateCapture("cc", { movements: [] });
+
+    interceptor.clear("checking");
+
+    expect(interceptor.getAll("checking")).toEqual([]);
+    expect(interceptor.getAll("cc")).toHaveLength(1);
+  });
+
+  it("waitFor captures a fresh response after clear (per-account re-fetch pattern)", async () => {
+    const { page, simulateCapture } = mockPage();
+    const interceptor = await createInterceptor(page, [{ id: "checking", urlPrefix: "https://bank.cl" }]);
+
+    simulateCapture("checking", { account: "A" });
+    expect(await interceptor.waitFor("checking")).toEqual([{ account: "A" }]);
+
+    interceptor.clear("checking");
+    setTimeout(() => simulateCapture("checking", { account: "B" }), 20);
+
+    const result = await interceptor.waitFor("checking", 500);
+    expect(result).toEqual([{ account: "B" }]);
+  });
+
   it("ignores malformed JSON from the browser bridge", async () => {
     const { page } = mockPage();
     let captureCallback: ((id: string, dataJson: string) => void) | undefined;

@@ -27,6 +27,8 @@ export interface BankMovement {
   balance: number;
   /** Origen: cuenta corriente, TC no facturada, TC facturada */
   source: MovementSource;
+  /** Moneda de la cuenta de origen (hoy solo lo distingue Santander, para bancos que tienen cuentas CLP y USD) */
+  currency?: "CLP" | "USD";
   /** Titular o adicional de la tarjeta */
   owner?: CardOwner;
   /** Identificador de la tarjeta (ej: "****8335") — útil cuando hay múltiples tarjetas */

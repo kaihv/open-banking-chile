@@ -15,6 +15,12 @@ export interface Interceptor {
    * Returns the captured responses, or an empty array if the timeout is reached.
    */
   waitFor(id: string, timeoutMs?: number): Promise<unknown[]>;
+  /**
+   * Discards previously captured responses for the given endpoint id. Useful when the same
+   * endpoint is called once per account (e.g. after switching accounts in a carousel) and
+   * captures need to be attributed to the account that was active when they arrived.
+   */
+  clear(id: string): void;
 }
 
 /**
@@ -145,6 +151,10 @@ export async function createInterceptor(
         await sleep(200);
       }
       return captures.get(id) ?? [];
+    },
+
+    clear(id: string): void {
+      captures.delete(id);
     },
   };
 }
