@@ -174,7 +174,7 @@ const TWO_FACTOR_CONFIG = {
 
 // ─── Santander-specific helpers ──────────────────────────────────────
 
-type MovementAccount = { index: number; label: string };
+type MovementAccount = { index: number; label: string; currency: "CLP" | "USD" };
 
 async function getLoginFrame(page: Page): Promise<Frame | null> {
   const handle = await page.$("iframe#login-frame");
@@ -184,7 +184,7 @@ async function getLoginFrame(page: Page): Promise<Frame | null> {
 async function listMovementAccounts(page: Page): Promise<MovementAccount[]> {
   return await page.evaluate(() => {
     const slides = Array.from(document.querySelectorAll("#tabs-carousel-movs .swiper-slide"));
-    const out: Array<{ index: number; label: string }> = [];
+    const out: Array<{ index: number; label: string; currency: "CLP" | "USD" }> = [];
     for (let i = 0; i < slides.length; i++) {
       const slide = slides[i] as HTMLElement;
       const text = slide.innerText?.replace(/\s+/g, " ").trim() || "";
@@ -193,7 +193,10 @@ async function listMovementAccounts(page: Page): Promise<MovementAccount[]> {
       const numberMatch = text.match(/\d(?:[\s.]\d+){3,}/);
       const type = typeMatch ? `Cuenta ${typeMatch[1]}` : "Cuenta";
       const number = numberMatch ? numberMatch[0].replace(/\s+/g, " ").trim() : `#${i + 1}`;
-      out.push({ index: i, label: `${type} ${number}`.trim() });
+      // Santander muestra "Cuenta Corriente Dólar" para la cuenta en USD — no hay otro
+      // indicador estructurado (la API de movimientos tampoco trae moneda ni cuenta).
+      const currency: "CLP" | "USD" = /US\$|USD|d[oó]lar/i.test(text) ? "USD" : "CLP";
+      out.push({ index: i, label: `${type} ${number}`.trim(), currency });
     }
     return out;
   });
@@ -430,36 +433,71 @@ async function scrapeSantander(
   // Multi-account handling
   const accounts = await listMovementAccounts(page);
   if (accounts.length > 0) {
-    debugLog.push(`  Accounts: ${accounts.map((a) => a.label).join(" | ")}`);
+    debugLog.push(`  Accounts: ${accounts.map((a) => `${a.label} [${a.currency}]`).join(" | ")}`);
   }
 
   let movements: BankMovement[] = [];
 
-  // Try API interception for checking account
-  const checkingCaptures = await interceptor.waitFor("santander-checking", 10_000);
-  if (checkingCaptures.length > 0) {
-    debugLog.push(`  Checking API: ${checkingCaptures.length} response(s) captured`);
-    const apiMovements = normalizeSantanderCheckingApiMovements(checkingCaptures);
-    debugLog.push(`  Checking API movements: ${apiMovements.length}`);
-    if (apiMovements.length > 0) {
+  // La API de cuentas se consulta al cargar la página, para la cuenta que esté activa en el
+  // carrusel — la reutilizamos para esa cuenta en vez de perderla al hacer `clear()` más abajo.
+  const initialCaptures = await interceptor.waitFor("santander-checking", 10_000);
+  const initialActiveIndex = await page.evaluate(() => {
+    const slides = Array.from(document.querySelectorAll("#tabs-carousel-movs .swiper-slide"));
+    return slides.findIndex((s) => (s as HTMLElement).className.includes("swiper-slide-active"));
+  });
+
+  if (accounts.length <= 1) {
+    const currency = accounts[0]?.currency ?? "CLP";
+    if (initialCaptures.length > 0) {
+      debugLog.push(`  Checking API: ${initialCaptures.length} response(s) captured`);
+      const apiMovements = normalizeSantanderCheckingApiMovements(initialCaptures);
+      debugLog.push(`  Checking API movements: ${apiMovements.length}`);
+      for (const m of apiMovements) m.currency = currency;
       movements.push(...apiMovements);
     }
-  }
+    if (movements.length === 0) {
+      debugLog.push("  Checking API: no data, falling back to HTML extraction");
+      const domMovements = await paginateAndExtract(page, extractAccountMovements, debugLog);
+      for (const m of domMovements) m.currency = currency;
+      movements.push(...domMovements);
+    }
+  } else {
+    // Con varias cuentas, la API se dispara una vez por cuenta activa: hay que cambiar de
+    // cuenta en el carrusel y esperar una captura nueva por cada una — si no, la
+    // intercepción solo ve la que estaba activa al cargar y las demás se pierden en
+    // silencio (nunca se scrapean, ni siquiera mezcladas con las otras).
+    for (const account of accounts) {
+      let acctCaptures: unknown[];
+      let onAccountPage: boolean;
 
-  if (movements.length === 0) {
-    debugLog.push("  Checking API: no data, falling back to HTML extraction");
-    if (accounts.length <= 1) {
-      movements = await paginateAndExtract(page, extractAccountMovements, debugLog);
-    } else {
-      for (const account of accounts) {
-        const switched = await selectMovementAccount(page, account.index);
-        if (!switched) {
+      if (account.index === initialActiveIndex && initialCaptures.length > 0) {
+        acctCaptures = initialCaptures;
+        onAccountPage = true;
+      } else {
+        interceptor.clear("santander-checking");
+        onAccountPage = await selectMovementAccount(page, account.index);
+        if (!onAccountPage) {
           debugLog.push(`  Could not switch to ${account.label}`);
           continue;
         }
+        acctCaptures = await interceptor.waitFor("santander-checking", 8_000);
+      }
+
+      const apiMovements = acctCaptures.length > 0 ? normalizeSantanderCheckingApiMovements(acctCaptures) : [];
+
+      if (apiMovements.length > 0) {
+        for (const m of apiMovements) m.currency = account.currency;
+        movements.push(...apiMovements);
+        debugLog.push(`  ${account.label} [${account.currency}] (API): ${apiMovements.length} movement(s)`);
+      } else if (onAccountPage) {
+        // Si esta cuenta no expone movimientos por esta API (ej. Línea de Crédito, que no
+        // siempre es un producto "current-account" — o devuelve una respuesta con 0
+        // movimientos en un formato distinto), volvemos al scraping de la tabla HTML. Ya
+        // estamos en la página de esta cuenta, no hace falta volver a cambiar.
         const acctMovements = await paginateAndExtract(page, extractAccountMovements, debugLog);
+        for (const m of acctMovements) m.currency = account.currency;
         movements.push(...acctMovements);
-        debugLog.push(`  ${account.label}: ${acctMovements.length} movement(s)`);
+        debugLog.push(`  ${account.label} [${account.currency}] (HTML): ${acctMovements.length} movement(s)`);
       }
     }
   }
