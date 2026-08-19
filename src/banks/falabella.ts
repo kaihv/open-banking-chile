@@ -63,12 +63,17 @@ async function screenshotIfEnabled(page: Page, name: string, enabled: boolean, d
   return undefined;
 }
 
+async function dismissMarketingModal(page: Page): Promise<void> {
+  await page.keyboard.press("Escape").catch(() => {});
+  await page.locator("app-marketing button, app-marketing [aria-label*='cerrar' i]").first().click({ force: true, timeout: 2000 }).catch(() => {});
+}
+
 // ─── Login ───────────────────────────────────────────────────────
 
 async function login(page: Page, rut: string, password: string, debugLog: string[], doScreenshots: boolean, progress: (s: string) => void): Promise<{ success: true } | { success: false; error: string; screenshot?: string }> {
   debugLog.push("1. Navigating to bank homepage...");
   progress("Abriendo sitio del banco...");
-  await page.goto(BANK_URL, { waitUntil: "networkidle" });
+  await page.goto(BANK_URL, { waitUntil: "domcontentloaded" });
   await delay(2000);
 
   // Dismiss banners/popups
@@ -88,31 +93,27 @@ async function login(page: Page, rut: string, password: string, debugLog: string
   await delay(3000);
   await screenshotIfEnabled(page, "02-login-form", doScreenshots, debugLog);
 
-  // Fill RUT
+  // Fill RUT (form is inside a modal that opens after clicking "Mi Cuenta")
   debugLog.push("3. Filling RUT...");
   progress("Ingresando RUT...");
+  // Wait for the login modal to appear (RUT + Clave fields are visible together)
   const rutInput = page.getByRole("textbox", { name: "RUT", exact: true })
-    .or(page.locator('input[name*="rut"], input[id*="rut"], input[placeholder*="RUT"]').first());
+    .or(page.locator('input[placeholder*="RUT"], input[placeholder*="1234"]').first());
   try {
-    await rutInput.fill(rut, { timeout: 10000 });
+    await rutInput.first().fill(rut, { timeout: 10000 });
   } catch {
     const ss = (await page.screenshot()).toString("base64");
     return { success: false, error: "No se encontró campo de RUT", screenshot: ss };
   }
   await delay(1000);
 
-  // Advance to password step (Falabella uses two-step modal)
-  await page.keyboard.press("Enter");
-  debugLog.push("  Pressed Enter to advance to password step");
-  await delay(2000);
-
-  // Fill password
+  // Fill password (visible together with RUT in the new modal layout)
   debugLog.push("4. Filling password...");
   progress("Ingresando clave...");
-  const pwdInput = page.locator('input[type="password"]').first()
-    .or(page.getByRole("textbox", { name: /[Cc]lave/ }).first());
+  const pwdInput = page.getByRole("textbox", { name: "Clave internet", exact: true })
+    .or(page.locator('input[type="password"]').first());
   try {
-    await pwdInput.fill(password, { timeout: 10000 });
+    await pwdInput.first().fill(password, { timeout: 10000 });
   } catch {
     const ss = (await page.screenshot()).toString("base64");
     return { success: false, error: "No se encontró campo de clave", screenshot: ss };
@@ -177,16 +178,21 @@ async function login(page: Page, rut: string, password: string, debugLog: string
 async function scrapeAccountMovements(page: Page, debugLog: string[], doScreenshots: boolean, progress: (s: string) => void): Promise<{ movements: BankMovement[]; balance?: number }> {
   debugLog.push("7. [Cuenta] Looking for account...");
   progress("Buscando cartola de cuenta...");
+  await dismissMarketingModal(page);
 
   // Try clicking on Cuenta Corriente product card
   const ccLink = page.getByRole("link", { name: /Cuenta Corriente \d/ });
   let navigated = false;
 
   if (await ccLink.isVisible({ timeout: 5000 }).catch(() => false)) {
-    await ccLink.click();
-    await page.waitForLoadState("networkidle").catch(() => {});
-    await delay(3000);
-    navigated = true;
+    try {
+      await ccLink.click();
+      await page.waitForLoadState("networkidle").catch(() => {});
+      await delay(3000);
+      navigated = true;
+    } catch {
+      debugLog.push("  [Cuenta] Account card was blocked by a modal");
+    }
   }
 
   if (!navigated) {
@@ -386,16 +392,27 @@ async function scrapeCreditCard(page: Page, debugLog: string[], doScreenshots: b
   if (cupoData) Object.assign(creditCard, cupoData);
 
   // Click on CMR product card
-  const cmrLink = page.getByRole("link", { name: /CMR/ }).first()
-    .or(page.locator("#cardDetail0, [id^='cardDetail']").first())
-    .or(page.locator("a, button, div").filter({ hasText: /CMR/i }).first());
+  const cmrCandidates = [
+    page.locator("[id^='cardDetail']").filter({ hasText: /CMR/i }).first(),
+    page.getByText(/CMR Mastercard/i).first(),
+    page.getByRole("link", { name: /CMR/ }).first(),
+  ];
+  const cmrLink = await (async () => {
+    for (const candidate of cmrCandidates) {
+      if (await candidate.isVisible({ timeout: 5000 }).catch(() => false)) {
+        return candidate;
+      }
+    }
+    return null;
+  })();
 
-  if (!(await cmrLink.isVisible({ timeout: 5000 }).catch(() => false))) {
+  if (!cmrLink) {
     debugLog.push("  [CMR] No CMR card found on dashboard");
     return { movements: [], creditCard };
   }
 
-  await cmrLink.click();
+  await dismissMarketingModal(page);
+  await cmrLink.click({ force: true });
   await page.waitForLoadState("networkidle").catch(() => {});
   await delay(5000);
   await screenshotIfEnabled(page, "06-cmr-card", doScreenshots, debugLog);
