@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { DebugLog, deduplicateMovements } from "./utils.js";
+import { DebugLog, deduplicateMovements, normalizeDate } from "./utils.js";
 import { MOVEMENT_SOURCE } from "./types.js";
 import type { BankMovement } from "./types.js";
 
@@ -116,5 +116,41 @@ describe("deduplicateMovements", () => {
     const b = movement({ description: "B", balance: 200 });
     const result = deduplicateMovements([a, b, a]);
     expect(result.map((m) => m.description)).toEqual(["A", "B"]);
+  });
+});
+
+describe("normalizeDate", () => {
+  it("convierte ISO (yyyy-mm-dd) a dd-mm-yyyy", () => {
+    // Santander entrega transactionDate y FechaTxs en ISO; antes salían sin convertir.
+    expect(normalizeDate("2026-08-20")).toBe("20-08-2026");
+    expect(normalizeDate("2026-01-05")).toBe("05-01-2026");
+  });
+
+  it("acepta ISO con hora", () => {
+    expect(normalizeDate("2026-08-20T14:30:00")).toBe("20-08-2026");
+    expect(normalizeDate("2026-08-20 14:30")).toBe("20-08-2026");
+  });
+
+  it("mantiene el soporte de dd/mm/yyyy y variantes", () => {
+    expect(normalizeDate("13/03/2026")).toBe("13-03-2026");
+    expect(normalizeDate("13.03.2026")).toBe("13-03-2026");
+    expect(normalizeDate("13-03-2026")).toBe("13-03-2026");
+    expect(normalizeDate("5/3/26")).toBe("05-03-2026");
+  });
+
+  it("no confunde dd-mm-yyyy con ISO", () => {
+    // "13-03-2026" ya viene en el formato destino y no debe invertirse
+    expect(normalizeDate("13-03-2026")).toBe("13-03-2026");
+  });
+
+  it("soporta mes en texto", () => {
+    expect(normalizeDate("9 mar 2026")).toBe("09-03-2026");
+  });
+
+  it("avisa y devuelve el valor cuando no reconoce el formato", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(normalizeDate("no es una fecha")).toBe("no es una fecha");
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
