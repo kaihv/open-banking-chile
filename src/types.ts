@@ -31,6 +31,15 @@ export interface BankMovement {
   owner?: CardOwner;
   /** Identificador de la tarjeta (ej: "****8335") — útil cuando hay múltiples tarjetas */
   card?: string;
+  /**
+   * Fecha en que el movimiento se acreditó en la cuenta, cuando el banco la expone
+   * por separado de `date` (formato dd-mm-yyyy).
+   *
+   * `date` es la fecha de la operación (cuándo se hizo); `postedDate` es cuándo entró
+   * a la cuenta. Suelen diferir por días y la distinción importa para separar gasto
+   * devengado de salida de caja. Solo se completa si el banco entrega ambas.
+   */
+  postedDate?: string;
   /** Cuotas (ej: "01/01", "02/06") */
   installments?: string;
   /** Monto total de la compra (distinto de amount cuando es en cuotas) */

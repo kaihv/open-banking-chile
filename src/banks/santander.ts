@@ -28,7 +28,8 @@ const SANTANDER_CC_BILLED_API_PREFIX =
 // ─── API response normalizers ────────────────────────────────────
 
 interface SantanderCheckingApiMovement {
-  transactionDate: string; // "2026-03-19"
+  transactionDate: string; // "2026-03-19" — fecha de la operación
+  accountingDate?: string; // "2026-03-21" — fecha de acreditación en la cuenta
   movementAmount: string; // "00000010000000-" (centavos, trailing - = debit)
   chargePaymentFlag: string; // "D" = debit, "H" = haber/credit
   observation: string;
@@ -55,12 +56,16 @@ export function normalizeSantanderCheckingApiMovements(captures: unknown[]): Ban
         const balDigits = m.newBalance.replace(/[^0-9]/g, "");
         balance = Math.round(parseInt(balDigits, 10) / 100);
       }
+      // El endpoint entrega las dos fechas y suelen diferir: accountingDate es cuándo
+      // se acreditó, transactionDate cuándo se hizo la operación.
+      const postedDate = m.accountingDate ? normalizeDate(m.accountingDate) : undefined;
       movements.push({
         date: normalizeDate(m.transactionDate),
         description,
         amount,
         balance,
         source: MOVEMENT_SOURCE.account,
+        ...(postedDate ? { postedDate } : {}),
       });
     }
   }
