@@ -137,6 +137,13 @@ export function parseChileanAmount(text: string): number {
 export function normalizeDate(raw: string): string {
   const value = raw.trim();
 
+  // yyyy-mm-dd (ISO, con hora opcional). Algunas APIs bancarias entregan la fecha
+  // ya en ISO; sin esta rama caía al return final y salía sin convertir.
+  const isoMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s].*)?$/);
+  if (isoMatch) {
+    return `${isoMatch[3]}-${isoMatch[2]}-${isoMatch[1]}`;
+  }
+
   // dd/mm/yyyy, dd.mm.yyyy, dd-mm-yyyy (con año 2 o 4 dígitos)
   const fullMatch = value.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{2,4})$/);
   if (fullMatch) {
@@ -169,6 +176,10 @@ export function normalizeDate(raw: string): string {
     }
   }
 
+  // Ningún formato conocido: devolvemos el valor tal cual para no perder el dato, pero
+  // avisamos, porque un passthrough silencioso rompe el contrato dd-mm-yyyy sin que
+  // nadie se entere hasta que los datos ya están guardados.
+  console.warn(`[open-banking-chile] normalizeDate: formato no reconocido: "${value}"`);
   return value;
 }
 

@@ -62,8 +62,8 @@ describe("normalizeSantanderCheckingApiMovements", () => {
     expect(result[0].amount).toBeLessThan(0);
     expect(result[0].description).toBe("Supermercado Lider");
     expect(result[0].source).toBe(MOVEMENT_SOURCE.account);
-    // normalizeDate doesn't handle YYYY-MM-DD (no regex match), passes through as-is
-    expect(result[0].date).toBe("2026-01-15");
+    // La API entrega ISO; normalizeDate lo convierte al formato dd-mm-yyyy del repo
+    expect(result[0].date).toBe("15-01-2026");
   });
 
   it("parses a credit movement (chargePaymentFlag=H)", () => {
@@ -281,8 +281,8 @@ describe("normalizeSantanderBilledApiMovements", () => {
     expect(result[0].amount).toBe(-25000);
     expect(result[0].description).toBe("Farmacia Cruz Verde");
     expect(result[0].source).toBe(MOVEMENT_SOURCE.credit_card_billed);
-    // normalizeDate doesn't handle YYYY-MM-DD (no regex match), passes through as-is
-    expect(result[0].date).toBe("2026-01-20");
+    // La API entrega ISO; normalizeDate lo convierte al formato dd-mm-yyyy del repo
+    expect(result[0].date).toBe("20-01-2026");
     expect(result[0].balance).toBe(0);
   });
 

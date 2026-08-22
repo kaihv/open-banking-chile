@@ -46,7 +46,7 @@ describe("normalizeBciApiMovements", () => {
     };
     const result = normalizeBciApiMovements([capture]);
     // normalizeDate doesn't handle YYYY-MM-DD (no regex match), passes through as-is
-    expect(result[0].date).toBe("2026-03-22");
+    expect(result[0].date).toBe("22-03-2026");
   });
 
   it("rounds float amounts to the nearest integer", () => {
