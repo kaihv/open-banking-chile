@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { normalizeDate } from "../utils.js";
 import { MOVEMENT_SOURCE } from "../types.js";
 import {
   isSaldoInicial,
@@ -176,6 +177,47 @@ describe("normalizeSantanderCheckingApiMovements", () => {
 });
 
 // ─── normalizeSantanderUnbilledApiMovements ──────────────────────
+
+describe("normalizeSantanderCheckingApiMovements — postedDate", () => {
+  it("expone accountingDate como postedDate cuando difiere de la fecha de operación", () => {
+    const result = normalizeSantanderCheckingApiMovements([
+      {
+        movements: [
+          {
+            transactionDate: "2026-01-15",
+            accountingDate: "2026-01-17",
+            movementAmount: "00000010000000-",
+            chargePaymentFlag: "D",
+            observation: "COMPRA SUPERMERCADO",
+            expandedCode: "",
+          },
+        ],
+      },
+    ]);
+    // El formato lo define normalizeDate (ver #88); acá probamos el cableado:
+    // que accountingDate llegue a postedDate y que sea una fecha distinta de date.
+    expect(result[0].date).toBe(normalizeDate("2026-01-15"));
+    expect(result[0].postedDate).toBe(normalizeDate("2026-01-17"));
+    expect(result[0].postedDate).not.toBe(result[0].date);
+  });
+
+  it("omite postedDate cuando el banco no entrega accountingDate", () => {
+    const result = normalizeSantanderCheckingApiMovements([
+      {
+        movements: [
+          {
+            transactionDate: "2026-01-15",
+            movementAmount: "00000010000000-",
+            chargePaymentFlag: "D",
+            observation: "COMPRA SUPERMERCADO",
+            expandedCode: "",
+          },
+        ],
+      },
+    ]);
+    expect(result[0].postedDate).toBeUndefined();
+  });
+});
 
 describe("normalizeSantanderUnbilledApiMovements", () => {
   it("returns empty array for empty captures", () => {

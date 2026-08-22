@@ -275,6 +275,7 @@ Campos opcionales en `BankMovement`:
 | `owner`        | `"titular"` o `"adicional"` (Falabella CMR)                                 |
 | `card`         | Máscara de la tarjeta, ej: `"****8335"` (BChile, Falabella)                 |
 | `installments` | Cuotas en formato `NN/NN`, ej: `"02/06"` = cuota 2 de 6                     |
+| `postedDate`   | Fecha de acreditación en la cuenta, cuando difiere de la de operación (Santander) |
 | `totalAmount`  | Monto total de la compra cuando es en cuotas (Falabella)                    |
 
 ## Seguridad
